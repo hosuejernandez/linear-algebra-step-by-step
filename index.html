@@ -109,6 +109,31 @@
     .matrix input { width: 48px; }
   }
 
+  .options {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .options label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .options input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+  .mod-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .mod-n { color: var(--muted); }
+  .mod-n input {
+    width: 90px;
+    height: 34px;
+    text-align: center;
+    font-size: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .mod-n input:disabled { opacity: 0.45; }
+  .mod-n input.bad { border-color: var(--error-text); background: var(--error-bg); }
+
   .examples { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
   .examples .label { color: var(--muted); font-size: 0.9rem; margin-right: 4px; }
   .examples button {
@@ -166,6 +191,14 @@
     </div>
     <div class="matrix-wrap"><div class="matrix" id="matrix"></div></div>
     <div class="examples" id="examples"><span class="label">Try an example:</span></div>
+    <div class="options">
+      <div class="mod-row">
+        <label><input type="checkbox" id="mod-on"> Work in ℤ mod n</label>
+        <label class="mod-n">n = <input id="mod-n" value="7" inputmode="numeric"
+          autocomplete="off" aria-label="n, the modulus" disabled></label>
+      </div>
+      <label><input type="checkbox" id="show-steps"> Would you like to see the steps for RREF?</label>
+    </div>
     <div class="errors" id="errors" hidden></div>
   </div>
 
@@ -288,23 +321,52 @@
   function showErrors(errors) {
     errorsBox.hidden = !errors.length;
     errorsBox.innerHTML = errors.length
-      ? "Let's fix these entries first:<ul>" +
+      ? `Let's fix ${errors.length === 1 ? "this" : "these"} first:<ul>` +
         errors.map((e) => `<li>${renderSentence(e)}</li>`).join("") + "</ul>"
       : "";
-    const bad = new Set(errors.map((e) => e.match(/^Row (\d+), Column (\d+)/).slice(1).join(",")));
+    const bad = new Set(errors
+      .map((e) => e.match(/^Row (\d+), Column (\d+)/))
+      .filter(Boolean)
+      .map((found) => found.slice(1).join(",")));
     matrixBox.querySelectorAll("input").forEach((box, k) => {
       const cols = grid[0].length;
       box.classList.toggle("bad", bad.has(`${Math.floor(k / cols) + 1},${(k % cols) + 1}`));
     });
   }
 
+  // ---------------------------------------------------------------------
+  // Options: ℤ mod n and RREF steps
+  // ---------------------------------------------------------------------
+
+  const modOn = document.getElementById("mod-on");
+  const modN = document.getElementById("mod-n");
+  const showSteps = document.getElementById("show-steps");
+
+  modOn.addEventListener("change", () => {
+    modN.disabled = !modOn.checked;
+    update();
+  });
+  modN.addEventListener("input", scheduleUpdate);
+  modN.addEventListener("focus", () => modN.select());
+  showSteps.addEventListener("change", update);
+
   function update() {
-    const { matrix, errors } = MatrixMath.parseGrid(grid);
-    showErrors(errors);
-    // Keep the last good explanation on screen (faded) while a box is being fixed.
-    resultsBox.style.opacity = matrix ? 1 : 0.35;
-    if (!matrix) return;
-    const sections = MatrixMath.explain(MatrixMath.analyze(matrix));
+    // null means the normal mode (exact fractions).
+    let modulus = null;
+    let modError = null;
+    if (modOn.checked) {
+      ({ modulus = null, error: modError = null } = MatrixMath.parseModulus(modN.value));
+    }
+    modN.classList.toggle("bad", Boolean(modError));
+
+    const { matrix, errors } = MatrixMath.parseGrid(grid, modulus);
+    showErrors(modError ? [modError, ...errors] : errors);
+    // Keep the last good explanation on screen (faded) while something is being fixed.
+    const ready = matrix && !modError;
+    resultsBox.style.opacity = ready ? 1 : 0.35;
+    if (!ready) return;
+    const sections = MatrixMath.explain(MatrixMath.analyze(matrix, modulus),
+                                        { showSteps: showSteps.checked });
     resultsBox.innerHTML = sections
       .map(([title, blocks], k) =>
         `<section class="card section"><h2><span class="num">${k + 1}.</span>${title}</h2>` +

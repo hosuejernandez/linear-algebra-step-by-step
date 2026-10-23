@@ -1,11 +1,12 @@
 // The math and the explanations for the Matrix Explainer.
 //
 // Nothing in here touches the web page. `analyze` does the linear algebra
-// with exact fractions, and `explain` turns the results into student-friendly
-// sections made of Markdown-style text and LaTeX formulas.
+// and `explain` turns the results into student-friendly sections made of
+// Markdown-style text and LaTeX formulas.
 //
-// This is a translation of matrix_math.py (the Python version). Every number
-// is an exact fraction, so there is never any rounding.
+// Numbers are either exact fractions (the normal mode, a translation of
+// matrix_math.py) or integers mod a prime p (the ℤ mod n mode). Both kinds of
+// number have the same methods, so the row reduction code works for either.
 
 (function () {
   "use strict";
@@ -38,7 +39,12 @@
     div(o) { return new Frac(this.n * o.d, this.d * o.n); }
     neg() { return new Frac(-this.n, this.d); }
     abs() { return new Frac(this.n < 0n ? -this.n : this.n, this.d); }
+    inverse() { return ONE.div(this); }
+    zero() { return ZERO; }
+    one() { return ONE; }
     isZero() { return this.n === 0n; }
+    isOne() { return this.n === 1n && this.d === 1n; }
+    isInteger() { return this.d === 1n; }
     isNegative() { return this.n < 0n; }
     equals(o) { return this.n === o.n && this.d === o.d; }
     toString() { return this.d === 1n ? `${this.n}` : `${this.n}/${this.d}`; }
@@ -51,6 +57,49 @@
 
   const ZERO = new Frac(0n);
   const ONE = new Frac(1n);
+
+  // -------------------------------------------------------------------------
+  // Integers mod a prime p (always stored as 0, 1, ..., p - 1)
+  // -------------------------------------------------------------------------
+
+  class ModP {
+    constructor(v, p) {
+      this.p = p;
+      this.v = ((v % p) + p) % p;
+    }
+    make(v) { return new ModP(v, this.p); }
+    add(o) { return this.make(this.v + o.v); }
+    sub(o) { return this.make(this.v - o.v); }
+    mul(o) { return this.make(this.v * o.v); }
+    div(o) { return this.mul(o.inverse()); }
+    neg() { return this.make(-this.v); }
+    abs() { return this; }
+    // Extended Euclidean algorithm: finds x with v * x ≡ 1 (mod p).
+    inverse() {
+      if (this.v === 0n) throw new Error("division by zero");
+      let [r0, r1, s0, s1] = [this.v, this.p, 1n, 0n];
+      while (r1) {
+        const q = r0 / r1;
+        [r0, r1] = [r1, r0 - q * r1];
+        [s0, s1] = [s1, s0 - q * s1];
+      }
+      return this.make(s0);
+    }
+    zero() { return this.make(0n); }
+    one() { return this.make(1n); }
+    isZero() { return this.v === 0n; }
+    isOne() { return this.v === 1n; }
+    isInteger() { return true; }
+    isNegative() { return false; }
+    equals(o) { return this.v === o.v; }
+    toString() { return `${this.v}`; }
+    tex() { return `${this.v}`; }
+  }
+
+  function fracToModP(f, p) {
+    if (f.d % p === 0n) return null;
+    return new ModP(f.n, p).div(new ModP(f.d, p));
+  }
 
   // -------------------------------------------------------------------------
   // Reading what the user typed
@@ -69,7 +118,7 @@
     return negative ? f.neg() : f;
   }
 
-  function parseEntry(text) {
+  function parseEntry(text, modulus = null) {
     const cleaned = String(text).trim().replace(/−/g, "-").replace(/ /g, "");
     if (cleaned === "") throw new Error("this box is empty");
     const match = ENTRY.exec(cleaned);
@@ -77,17 +126,24 @@
     const top = decimalToFrac(match[1]);
     const bottom = match[2] ? decimalToFrac(match[2]) : ONE;
     if (bottom.isZero()) throw new Error("`" + text + "` divides by zero");
-    return top.div(bottom);
+    const value = top.div(bottom);
+    if (modulus === null) return value;
+    const reduced = fracToModP(value, modulus);
+    if (!reduced) {
+      throw new Error("`" + text + "` can't be used mod " + modulus +
+                      ", because its denominator is a multiple of " + modulus);
+    }
+    return reduced;
   }
 
   // Returns { matrix, errors }. If anything couldn't be read, matrix is null
   // and errors lists every problem cell in plain English.
-  function parseGrid(grid) {
+  function parseGrid(grid, modulus = null) {
     const errors = [];
     const matrix = grid.map((row, i) =>
       row.map((cell, j) => {
         try {
-          return parseEntry(cell);
+          return parseEntry(cell, modulus);
         } catch (problem) {
           errors.push(`Row ${i + 1}, Column ${j + 1}: ${problem.message}.`);
           return null;
@@ -97,42 +153,99 @@
     return errors.length ? { matrix: null, errors } : { matrix, errors };
   }
 
+  const MAX_MODULUS = 1000000000;
+
+  function smallestFactor(n) {
+    for (let q = 2; q * q <= n; q++) if (n % q === 0) return q;
+    return n;
+  }
+
+  function isPrime(n) {
+    return n >= 2 && smallestFactor(n) === n;
+  }
+
+  // Check the n typed for ℤ mod n. Returns { modulus } (a BigInt) or { error }.
+  function parseModulus(text) {
+    const cleaned = String(text).trim();
+    if (!/^\d+$/.test(cleaned) || Number(cleaned) < 2) {
+      return { error: "For ℤ mod n, n must be a whole number that is 2 or bigger." };
+    }
+    const n = Number(cleaned);
+    if (n > MAX_MODULUS) {
+      return { error: "For ℤ mod n, please pick an n up to 1,000,000,000." };
+    }
+    const q = smallestFactor(n);
+    if (q !== n) {
+      let below = n - 1;
+      while (!isPrime(below)) below--;
+      let above = n + 1;
+      while (!isPrime(above)) above++;
+      return {
+        error:
+          String.raw`$\mathbb{Z}_{${n}}$ doesn't work for row reduction, because ${n} isn't prime. ` +
+          String.raw`For example, $${q} \times ${n / q} = ${n} \equiv 0 \pmod{${n}}$, so $${q}$ has no ` +
+          `inverse mod ${n}, and a pivot of $${q}$ could never be turned into a $1$. ` +
+          `Kernels, images, and Rank–Nullity all work perfectly when n is **prime**. ` +
+          `Try a prime like ${below} or ${above}.`,
+      };
+    }
+    return { modulus: BigInt(n) };
+  }
+
   // -------------------------------------------------------------------------
   // The linear algebra
   // -------------------------------------------------------------------------
 
+  // Gauss–Jordan elimination. Also records every row operation as a step:
+  //   { kind: "swap", col, a, b, matrix }
+  //   { kind: "scale", col, row, pivot, factor, matrix }
+  //   { kind: "add", col, target, source, factor, matrix }  (target -= factor × source)
+  //   { kind: "skip", col, row }                           (column gets no pivot)
   function rref(A) {
     const m = A.length;
     const n = A[0].length;
     const R = A.map((row) => row.slice());
     const pivots = [];
+    const steps = [];
+    const snapshot = () => R.map((row) => row.slice());
     let row = 0;
     for (let col = 0; col < n && row < m; col++) {
       let p = row;
       while (p < m && R[p][col].isZero()) p++;
-      if (p === m) continue;
-      [R[row], R[p]] = [R[p], R[row]];
+      if (p === m) {
+        steps.push({ kind: "skip", col, row });
+        continue;
+      }
+      if (p !== row) {
+        [R[row], R[p]] = [R[p], R[row]];
+        steps.push({ kind: "swap", col, a: row, b: p, matrix: snapshot() });
+      }
       const pivot = R[row][col];
-      R[row] = R[row].map((x) => x.div(pivot));
+      if (!pivot.isOne()) {
+        const factor = pivot.inverse();
+        R[row] = R[row].map((x) => x.mul(factor));
+        steps.push({ kind: "scale", col, row, pivot, factor, matrix: snapshot() });
+      }
       for (let i = 0; i < m; i++) {
         if (i === row || R[i][col].isZero()) continue;
         const factor = R[i][col];
         R[i] = R[i].map((x, j) => x.sub(factor.mul(R[row][j])));
+        steps.push({ kind: "add", col, target: i, source: row, factor, matrix: snapshot() });
       }
       pivots.push(col);
       row++;
     }
-    return { R, pivots };
+    return { R, pivots, steps };
   }
 
   function determinant(A) {
     const n = A.length;
     const M = A.map((row) => row.slice());
-    let det = ONE;
+    let det = A[0][0].one();
     for (let col = 0; col < n; col++) {
       let p = col;
       while (p < n && M[p][col].isZero()) p++;
-      if (p === n) return ZERO;
+      if (p === n) return det.zero();
       if (p !== col) {
         [M[col], M[p]] = [M[p], M[col]];
         det = det.neg();
@@ -149,8 +262,10 @@
   // Row reduce [A | I]; the right half becomes the inverse.
   function inverse(A) {
     const n = A.length;
+    const zero = A[0][0].zero();
+    const one = A[0][0].one();
     const augmented = A.map((row, i) =>
-      row.concat(Array.from({ length: n }, (_, j) => (i === j ? ONE : ZERO)))
+      row.concat(Array.from({ length: n }, (_, j) => (i === j ? one : zero)))
     );
     return rref(augmented).R.map((row) => row.slice(n));
   }
@@ -159,16 +274,19 @@
     return A.map((row) => row[j]);
   }
 
-  function analyze(A) {
+  // `modulus` is null for the normal mode, or the prime p for ℤ mod p.
+  function analyze(A, modulus = null) {
     const m = A.length;
     const n = A[0].length;
-    const { R, pivots } = rref(A);
+    const zero = A[0][0].zero();
+    const one = A[0][0].one();
+    const { R, pivots, steps } = rref(A);
     const free = [];
     for (let j = 0; j < n; j++) if (!pivots.includes(j)) free.push(j);
 
     // Solve A x = 0. Each x_j is written as a combination of the free
     // variables: a Map from free column -> coefficient.
-    const general = Array.from({ length: n }, (_, j) => new Map([[j, ONE]]));
+    const general = Array.from({ length: n }, (_, j) => new Map([[j, one]]));
     pivots.forEach((p, row) => {
       const coefficients = new Map();
       for (const f of free) {
@@ -178,7 +296,7 @@
     });
 
     // One kernel basis vector per free variable: its coefficients.
-    const kernelBasis = free.map((f) => general.map((c) => c.get(f) || ZERO));
+    const kernelBasis = free.map((f) => general.map((c) => c.get(f) || zero));
     const imageBasis = pivots.map((p) => column(A, p));
 
     const rank = pivots.length;
@@ -188,7 +306,7 @@
     const invertible = injective && surjective;
 
     return {
-      A, m, n, rref: R, pivots, free, general, kernelBasis, imageBasis,
+      A, m, n, modulus, rref: R, pivots, steps, free, general, kernelBasis, imageBasis,
       rank, nullity, injective, surjective, invertible,
       det: m === n ? determinant(A) : null,
       inverse: invertible ? inverse(A) : null,
@@ -246,13 +364,22 @@
         const c = coefficients.get(f);
         const sign = c.isNegative() ? (k === 0 ? "-" : " - ") : k === 0 ? "" : " + ";
         const size = c.abs();
-        return sign + (size.equals(ONE) ? "" : size.tex() + " ") + variable(f);
+        return sign + (size.isOne() ? "" : size.tex() + " ") + variable(f);
       })
       .join("");
   }
 
-  function R(k) {
-    return `\\mathbb{R}^{${k}}`;
+  // ℝ^k normally, ℤ_p^k in mod p mode.
+  function space(a, k) {
+    return a.modulus === null
+      ? `\\mathbb{R}^{${k}}`
+      : `\\mathbb{Z}_{${a.modulus}}^{${k}}`;
+  }
+
+  // "p^k = N", leaving off N when it would be enormous.
+  function countTex(p, k) {
+    const total = (p ** BigInt(k)).toString();
+    return total.length > 15 ? `${p}^{${k}}` : `${p}^{${k}} = ${total}`;
   }
 
   // -------------------------------------------------------------------------
@@ -296,10 +423,11 @@
   const raw = String.raw;
 
   // Returns a list of [title, blocks]. Each block is ["md", text] or ["latex", formula].
-  function explain(a) {
+  // options.showSteps adds every row operation to the RREF section.
+  function explain(a, options = {}) {
     const sections = [
       ["The Setup", setup(a)],
-      ["Row Reduce to RREF", rrefSection(a)],
+      ["Row Reduce to RREF", rrefSection(a, options.showSteps)],
       ["The Kernel", kernel(a)],
       ["The Image", image(a)],
       ["Is it Injective?", injectiveSection(a)],
@@ -312,21 +440,31 @@
   }
 
   function setup(a) {
-    return [
+    const blocks = [
       latex("A = " + matrixTex(a.A)),
       md(raw`Our matrix $A$ has **${plural(a.m, "row")}** and **${plural(a.n, "column")}**, ` +
          raw`so it is a $${a.m} \times ${a.n}$ matrix. That means the transformation ` +
-         raw`$T(\vec{x}) = A\vec{x}$ takes vectors from $${R(a.n)}$ (the **domain**) ` +
-         raw`and sends them to $${R(a.m)}$ (the **codomain**).`),
+         raw`$T(\vec{x}) = A\vec{x}$ takes vectors from $${space(a, a.n)}$ (the **domain**) ` +
+         raw`and sends them to $${space(a, a.m)}$ (the **codomain**).`),
     ];
+    if (a.modulus !== null) {
+      const p = a.modulus;
+      blocks.push(md(
+        raw`We're working in $\mathbb{Z}_{${p}}$, the **integers mod ${p}**. Every entry is ` +
+        `replaced by its remainder when divided by ${p}, and all arithmetic wraps around ` +
+        raw`at ${p}. For example, $-1 \equiv ${p - 1n}$ and $${p} \equiv 0 \pmod{${p}}$. ` +
+        "Fractions work too, as long as the bottom isn't a multiple of " +
+        raw`${p}: $\tfrac{1}{2}$ means the number that gives $1$ when multiplied by $2$.`));
+    }
+    return blocks;
   }
 
-  function rrefSection(a) {
+  function rrefSection(a, showSteps) {
     const pivotSpots = new Set(a.pivots.map((col, row) => `${row},${col}`));
-    const blocks = [
-      md("Row reducing $A$ gives its **reduced row echelon form** (RREF):"),
-      latex(raw`\operatorname{rref}(A) = ` + matrixTex(a.rref, pivotSpots)),
-    ];
+    const blocks = showSteps
+      ? stepBlocks(a)
+      : [md("Row reducing $A$ gives its **reduced row echelon form** (RREF):")];
+    blocks.push(latex(raw`\operatorname{rref}(A) = ` + matrixTex(a.rref, pivotSpots)));
     if (!a.pivots.length) {
       blocks.push(md(
         "Every entry is $0$, so there are **no pivots** at all. " +
@@ -344,6 +482,85 @@
     }
     blocks.push(md(text));
     return blocks;
+  }
+
+  // Every row operation, one at a time, ending just before the final RREF.
+  function stepBlocks(a) {
+    const mod = a.modulus !== null;
+    const operations = a.steps.filter((s) => s.kind !== "skip");
+    if (!operations.length) {
+      return [md("$A$ is **already** in reduced row echelon form, so no row operations " +
+                 "are needed:")];
+    }
+    const blocks = [
+      md("Let's row reduce $A$ one step at a time. We work column by column: get a " +
+         "nonzero number into the pivot spot, turn it into a $1$, then use it to make " +
+         "every other entry in its column a $0$." +
+         (mod ? ` Remember, all arithmetic is mod ${a.modulus}.` : "")),
+      latex("A = " + matrixTex(a.A)),
+    ];
+    let count = 0;
+    for (const step of a.steps) {
+      if (step.kind === "skip") {
+        blocks.push(md(
+          `Column ${step.col + 1} has no nonzero entries at or below row ${step.row + 1}, ` +
+          "so it gets **no pivot**. On to the next column."));
+        continue;
+      }
+      count++;
+      const [label, sentence] = describeStep(step, a);
+      blocks.push(
+        md(`**Step ${count}:** ${sentence}`),
+        latex(raw`\xrightarrow{\;${label}\;}` + matrixTex(step.matrix)));
+    }
+    blocks.push(md("Every pivot is now a $1$ with zeros above and below it, so we've " +
+                   "reached the RREF:"));
+    return blocks;
+  }
+
+  // Returns [arrow label, plain-English sentence] for one row operation.
+  function describeStep(step, a) {
+    const R = (i) => `R_{${i + 1}}`;
+    if (step.kind === "swap") {
+      return [
+        raw`${R(step.a)} \leftrightarrow ${R(step.b)}`,
+        `Swap row ${step.a + 1} and row ${step.b + 1}, so there's a nonzero number in ` +
+        `the pivot spot of column ${step.col + 1}.`,
+      ];
+    }
+    if (step.kind === "scale") {
+      const label = raw`${R(step.row)} \to ${step.factor.tex()}${R(step.row)}`;
+      if (a.modulus !== null) {
+        const product = step.pivot.v * step.factor.v;
+        return [label,
+          `Multiply row ${step.row + 1} by $${step.factor.tex()}$ to make the pivot a $1$. ` +
+          raw`(In $\mathbb{Z}_{${a.modulus}}$, $${step.factor.tex()}$ is the inverse of ` +
+          raw`$${step.pivot.tex()}$, because $${step.pivot.tex()} \times ${step.factor.tex()} ` +
+          raw`= ${product} \equiv 1$.)`];
+      }
+      if (step.pivot.isInteger()) {
+        return [label,
+          `Divide row ${step.row + 1} by $${step.pivot.tex()}$ to make the pivot a $1$.`];
+      }
+      return [label,
+        `Multiply row ${step.row + 1} by $${step.factor.tex()}$ to make the pivot a $1$.`];
+    }
+    // "add": target row minus factor times source row
+    const where = step.target > step.source ? "below" : "above";
+    const subtract = !step.factor.isNegative();
+    const size = step.factor.abs();
+    const times = size.isOne() ? "" : size.tex();
+    const sentence =
+      (subtract
+        ? `Subtract ${size.isOne() ? "" : `$${times}$ times `}row ${step.source + 1} ` +
+          `from row ${step.target + 1}`
+        : `Add ${size.isOne() ? "" : `$${times}$ times `}row ${step.source + 1} ` +
+          `to row ${step.target + 1}`) +
+      ` to turn the $${step.factor.tex()}$ ${where} the pivot into a $0$.`;
+    return [
+      raw`${R(step.target)} \to ${R(step.target)} ${subtract ? "-" : "+"} ${times}${R(step.source)}`,
+      sentence,
+    ];
   }
 
   function kernel(a) {
@@ -370,7 +587,11 @@
         (p) => `${variable(p)} &= ${combinationTex(a.general[p], a.free)}`);
       blocks.push(
         md("Each nonzero row of the RREF is an equation. Solving each one for its " +
-           "pivot variable gives:"),
+           "pivot variable gives:" +
+           (a.modulus !== null
+             ? ` (Everything is mod ${a.modulus}, so a negative number like $-1$ is ` +
+               `written as $${a.modulus - 1n}$.)`
+             : "")),
         latex(raw`\begin{aligned}` + equations.join(raw` \\ `) + raw`\end{aligned}`),
         md(`The free ${one ? "variable" : "variables"} ${variablesPhrase(a.free)} ` +
            raw`can be **any** number. Writing $\vec{x}$ in terms of ` +
@@ -398,6 +619,13 @@
       latex(raw`\text{Basis for } \ker(A) = ` + setTex(a.kernelBasis)),
       md(`There ${a.nullity === 1 ? "is" : "are"} ${plural(a.nullity, "vector")} ` +
          `in the basis, so the **nullity** of $A$ is $${a.nullity}$.`));
+    if (a.modulus !== null) {
+      const p = a.modulus;
+      blocks.push(md(
+        `In $\\mathbb{Z}_{${p}}$, each free variable can be any of the ${p} numbers ` +
+        raw`$0, 1, \dots, ${p - 1n}$, so the kernel contains exactly ` +
+        `$${countTex(p, a.nullity)}$ vectors.`));
+    }
     return blocks;
   }
 
@@ -430,10 +658,17 @@
       latex(raw`\text{Basis for } \operatorname{im}(A) = ` + setTex(a.imageBasis)),
       md(`There ${a.rank === 1 ? "is" : "are"} ${plural(a.rank, "vector")} in ` +
          `the basis, so the **rank** of $A$ is $${a.rank}$.`));
+    if (a.modulus !== null) {
+      const p = a.modulus;
+      blocks.push(md(
+        `Each basis vector can be multiplied by any of the ${p} numbers in ` +
+        `$\\mathbb{Z}_{${p}}$, so the image contains exactly $${countTex(p, a.rank)}$ ` +
+        "vectors."));
+    }
     if (a.rank === a.m) {
       blocks.push(md(
-        `Notice that's $${a.rank}$ independent vectors in $${R(a.m)}$, so the ` +
-        `image is **all of** $${R(a.m)}$.`));
+        `Notice that's $${a.rank}$ independent vectors in $${space(a, a.m)}$, so the ` +
+        `image is **all of** $${space(a, a.m)}$.`));
     }
     return blocks;
   }
@@ -471,14 +706,14 @@
   function surjectiveSection(a) {
     const blocks = [md(
       "A transformation is **surjective** (onto) when every vector in the codomain " +
-      `$${R(a.m)}$ is an output of something. For a matrix, this happens exactly when ` +
-      `the image is all of $${R(a.m)}$, which means **every row of the RREF has a ` +
+      `$${space(a, a.m)}$ is an output of something. For a matrix, this happens exactly when ` +
+      `the image is all of $${space(a, a.m)}$, which means **every row of the RREF has a ` +
       `pivot** (the rank equals the number of rows, $${a.m}$).`)];
 
     if (a.surjective) {
       blocks.push(md(
         raw`✅ $\operatorname{rank}(A) = ${a.rank}$, which equals the number of rows. ` +
-        `Every row has a pivot, so the image is all of $${R(a.m)}$ and $A$ ` +
+        `Every row has a pivot, so the image is all of $${space(a, a.m)}$ and $A$ ` +
         "**is surjective**."));
       return blocks;
     }
@@ -489,8 +724,8 @@
       raw`❌ $\operatorname{rank}(A) = ${a.rank}$, which is less than $${a.m}$. ` +
       `${capitalize(rowsPhrase(zeroRows))} of the RREF ` +
       `${zeroRows.length === 1 ? "is" : "are"} all zeros, with no pivot. So the image ` +
-      `is only a $${a.rank}$-dimensional piece of $${R(a.m)}$, and some vectors in ` +
-      `$${R(a.m)}$ are never reached. $A$ **is not surjective**.`));
+      `is only a $${a.rank}$-dimensional piece of $${space(a, a.m)}$, and some vectors in ` +
+      `$${space(a, a.m)}$ are never reached. $A$ **is not surjective**.`));
     if (a.n < a.m) {
       blocks.push(md(
         `💡 **Shortcut:** $A$ has fewer columns ($${a.n}$) than rows ($${a.m}$). Each ` +
@@ -523,18 +758,22 @@
   }
 
   function squareExtras(a) {
+    const mod = a.modulus !== null;
     const blocks = [
       md("Because $A$ is square, we can also find its **determinant**:"),
-      latex(raw`\det(A) = ` + a.det.tex()),
+      latex(mod
+        ? raw`\det(A) \equiv ${a.det.tex()} \pmod{${a.modulus}}`
+        : raw`\det(A) = ` + a.det.tex()),
     ];
+    const where = mod ? raw` in $\mathbb{Z}_{${a.modulus}}$` : "";
     if (a.invertible) {
       blocks.push(
-        md(raw`Since $\det(A) \neq 0$, this agrees with what we found: $A$ is ` +
+        md(raw`Since $\det(A) \neq 0$${where}, this agrees with what we found: $A$ is ` +
            "invertible. Its **inverse** is:"),
         latex("A^{-1} = " + matrixTex(a.inverse)));
     } else {
       blocks.push(md(
-        raw`Since $\det(A) = 0$, this agrees with what we found: $A$ is not ` +
+        raw`Since $\det(A) = 0$${where}, this agrees with what we found: $A$ is not ` +
         "invertible, so $A^{-1}$ does not exist."));
     }
     return blocks;
@@ -564,7 +803,7 @@
     ];
   }
 
-  const api = { Frac, parseEntry, parseGrid, analyze, explain };
+  const api = { Frac, ModP, parseEntry, parseGrid, parseModulus, analyze, explain };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else window.MatrixMath = api;
 })();
