@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matrix Explainer</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="matrix.js"></script>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --card: #ffffff;
+    --text: #1f2328;
+    --muted: #5f6670;
+    --border: #dcdfe3;
+    --accent: #2f6fdf;
+    --accent-soft: #e8f0fd;
+    --error-bg: #fdecec;
+    --error-text: #a12626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14161a;
+      --card: #1c1f24;
+      --text: #e8eaed;
+      --muted: #a0a6ae;
+      --border: #33373e;
+      --accent: #7aa7f5;
+      --accent-soft: #1f2a3d;
+      --error-bg: #3a1d1d;
+      --error-text: #f5a3a3;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 780px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.8rem; margin: 0 0 4px; }
+  .lead { color: var(--muted); margin: 0 0 20px; }
+  code {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 0.9em;
+    background: var(--accent-soft);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+
+  /* --- input --- */
+  .sizes { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 16px; }
+  .stepper { display: flex; align-items: center; gap: 8px; }
+  .stepper span.label { font-weight: 600; min-width: 70px; }
+  .stepper button {
+    width: 34px; height: 34px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    font-size: 1.2rem;
+    cursor: pointer;
+  }
+  .stepper button:disabled { opacity: 0.35; cursor: default; }
+  .stepper output { min-width: 20px; text-align: center; font-weight: 600; font-size: 1.1rem; }
+
+  .matrix-wrap { overflow-x: auto; padding: 4px 0 8px; }
+  .matrix {
+    display: inline-grid;
+    gap: 8px;
+    padding: 10px 16px;
+    position: relative;
+  }
+  /* big square brackets around the boxes */
+  .matrix::before, .matrix::after {
+    content: "";
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 10px;
+    border: 2.5px solid var(--text);
+  }
+  .matrix::before { left: 0; border-right: none; }
+  .matrix::after { right: 0; border-left: none; }
+  .matrix input {
+    width: 64px;
+    height: 40px;
+    text-align: center;
+    font-size: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .matrix input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .matrix input.bad { border-color: var(--error-text); background: var(--error-bg); }
+  @media (max-width: 480px) {
+    .card { padding: 16px; }
+    .matrix { gap: 6px; padding: 8px 14px; }
+    .matrix input { width: 48px; }
+  }
+
+  .examples { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  .examples .label { color: var(--muted); font-size: 0.9rem; margin-right: 4px; }
+  .examples button {
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 5px 12px;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  .examples button:hover, .stepper button:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .errors {
+    background: var(--error-bg);
+    color: var(--error-text);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-top: 16px;
+  }
+  .errors ul { margin: 6px 0 0; padding-left: 20px; }
+
+  /* --- output --- */
+  .section h2 { font-size: 1.25rem; margin: 0 0 8px; }
+  .section h2 .num { color: var(--accent); margin-right: 6px; }
+  .section p { margin: 10px 0; }
+  .formula { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+  .katex-display { margin: 8px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Matrix Explainer</h1>
+  <p class="lead">Type in a matrix and see its kernel, image, and whether it is injective,
+    surjective, and invertible, with every step explained. Entries can be whole numbers,
+    decimals, or fractions like <code>-3/4</code>.</p>
+
+  <div class="card">
+    <div class="sizes">
+      <div class="stepper">
+        <span class="label">Rows</span>
+        <button type="button" data-size="rows" data-step="-1" aria-label="Fewer rows">−</button>
+        <output id="rows-value"></output>
+        <button type="button" data-size="rows" data-step="1" aria-label="More rows">+</button>
+      </div>
+      <div class="stepper">
+        <span class="label">Columns</span>
+        <button type="button" data-size="cols" data-step="-1" aria-label="Fewer columns">−</button>
+        <output id="cols-value"></output>
+        <button type="button" data-size="cols" data-step="1" aria-label="More columns">+</button>
+      </div>
+    </div>
+    <div class="matrix-wrap"><div class="matrix" id="matrix"></div></div>
+    <div class="examples" id="examples"><span class="label">Try an example:</span></div>
+    <div class="errors" id="errors" hidden></div>
+  </div>
+
+  <div id="results"></div>
+</main>
+
+<script>
+  const MAX_SIZE = 6;
+
+  const EXAMPLES = {
+    "Identity (3×3)": [["1", "0", "0"], ["0", "1", "0"], ["0", "0", "1"]],
+    "Wide (3×4)": [["1", "2", "0", "3"], ["2", "4", "1", "7"], ["3", "6", "1", "10"]],
+    "Singular (3×3)": [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"]],
+    "Tall (3×2)": [["1", "0"], ["0", "1"], ["1", "1"]],
+    "Fractions (2×2)": [["1/2", "-3/4"], ["2", "5"]],
+  };
+
+  // What the user has typed, one string per box.
+  let grid = EXAMPLES["Wide (3×4)"].map((row) => row.slice());
+
+  const matrixBox = document.getElementById("matrix");
+  const errorsBox = document.getElementById("errors");
+  const resultsBox = document.getElementById("results");
+
+  // ---------------------------------------------------------------------
+  // The input boxes
+  // ---------------------------------------------------------------------
+
+  function drawGrid() {
+    const rows = grid.length;
+    const cols = grid[0].length;
+    matrixBox.style.gridTemplateColumns = `repeat(${cols}, auto)`;
+    matrixBox.innerHTML = "";
+    grid.forEach((row, i) =>
+      row.forEach((value, j) => {
+        const box = document.createElement("input");
+        box.value = value;
+        box.inputMode = "text";
+        box.autocomplete = "off";
+        box.spellcheck = false;
+        box.setAttribute("aria-label", `Row ${i + 1}, Column ${j + 1}`);
+        box.addEventListener("input", () => {
+          grid[i][j] = box.value;
+          scheduleUpdate();
+        });
+        box.addEventListener("focus", () => box.select());
+        matrixBox.appendChild(box);
+      })
+    );
+    document.getElementById("rows-value").textContent = rows;
+    document.getElementById("cols-value").textContent = cols;
+    document.querySelectorAll("[data-size]").forEach((button) => {
+      const current = button.dataset.size === "rows" ? rows : cols;
+      const next = current + Number(button.dataset.step);
+      button.disabled = next < 1 || next > MAX_SIZE;
+    });
+  }
+
+  // Keep what was typed; new boxes start at 0.
+  function resize(rows, cols) {
+    grid = Array.from({ length: rows }, (_, i) =>
+      Array.from({ length: cols }, (_, j) => grid[i]?.[j] ?? "0"));
+    drawGrid();
+    update();
+  }
+
+  document.querySelectorAll("[data-size]").forEach((button) =>
+    button.addEventListener("click", () => {
+      const step = Number(button.dataset.step);
+      const rows = grid.length + (button.dataset.size === "rows" ? step : 0);
+      const cols = grid[0].length + (button.dataset.size === "cols" ? step : 0);
+      resize(rows, cols);
+    })
+  );
+
+  const examplesBox = document.getElementById("examples");
+  for (const [name, example] of Object.entries(EXAMPLES)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = name;
+    button.addEventListener("click", () => {
+      grid = example.map((row) => row.slice());
+      drawGrid();
+      update();
+    });
+    examplesBox.appendChild(button);
+  }
+
+  // ---------------------------------------------------------------------
+  // Showing the explanation
+  // ---------------------------------------------------------------------
+
+  function escapeHtml(text) {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Plain text with **bold**, *italic*, `code`.
+  function formatText(text) {
+    return escapeHtml(text)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  }
+
+  function math(tex, displayMode) {
+    return katex.renderToString(tex, { displayMode, throwOnError: false });
+  }
+
+  // A sentence where $...$ is inline math. Math is pulled out first so the
+  // bold/italic markers can wrap around it.
+  function renderSentence(text) {
+    const formulas = [];
+    const withSlots = text.replace(/\$([^$]+)\$/g, (_, tex) => {
+      formulas.push(math(tex, false));
+      return `\u0000${formulas.length - 1}\u0000`;
+    });
+    return formatText(withSlots).replace(/\u0000(\d+)\u0000/g, (_, k) => formulas[k]);
+  }
+
+  function showErrors(errors) {
+    errorsBox.hidden = !errors.length;
+    errorsBox.innerHTML = errors.length
+      ? "Let's fix these entries first:<ul>" +
+        errors.map((e) => `<li>${renderSentence(e)}</li>`).join("") + "</ul>"
+      : "";
+    const bad = new Set(errors.map((e) => e.match(/^Row (\d+), Column (\d+)/).slice(1).join(",")));
+    matrixBox.querySelectorAll("input").forEach((box, k) => {
+      const cols = grid[0].length;
+      box.classList.toggle("bad", bad.has(`${Math.floor(k / cols) + 1},${(k % cols) + 1}`));
+    });
+  }
+
+  function update() {
+    const { matrix, errors } = MatrixMath.parseGrid(grid);
+    showErrors(errors);
+    // Keep the last good explanation on screen (faded) while a box is being fixed.
+    resultsBox.style.opacity = matrix ? 1 : 0.35;
+    if (!matrix) return;
+    const sections = MatrixMath.explain(MatrixMath.analyze(matrix));
+    resultsBox.innerHTML = sections
+      .map(([title, blocks], k) =>
+        `<section class="card section"><h2><span class="num">${k + 1}.</span>${title}</h2>` +
+        blocks
+          .map(([kind, content]) =>
+            kind === "latex"
+              ? `<div class="formula">${math(content, true)}</div>`
+              : `<p>${renderSentence(content)}</p>`)
+          .join("") +
+        "</section>")
+      .join("");
+  }
+
+  let timer;
+  function scheduleUpdate() {
+    clearTimeout(timer);
+    timer = setTimeout(update, 200);
+  }
+
+  drawGrid();
+  update();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+# Only the web page is published. The Python version stays on this computer.
+*
+!.gitignore
+!index.html
+!matrix.js
+!README.md
