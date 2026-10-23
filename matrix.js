@@ -693,7 +693,71 @@
         for (const r of f.roots) values.push(eigenspace(Ad, r, f.mult, f.d < 0n));
       }
     }
-    return { poly, ...found, values };
+    // Eigenvalues we can only write as decimals get decimal eigenvectors.
+    const approxValues = [];
+    for (const f of found.factors) {
+      if (f.kind !== "other") continue;
+      for (const z of f.approx) {
+        const space = numericEigenspace(A, z);
+        approxValues.push({ z, mult: f.mult, complex: !isRealish(z), space,
+                            geo: space ? space.basis.length : null });
+      }
+    }
+    return { poly, ...found, values, approxValues };
+  }
+
+  // Row reduce a matrix of complex floats, treating anything within tol of 0 as 0.
+  function numericRref(M, tol) {
+    const R = M.map((row) => row.map((z) => z.slice()));
+    const m = R.length;
+    const n = R[0].length;
+    const pivots = [];
+    let row = 0;
+    for (let col = 0; col < n && row < m; col++) {
+      let best = row;
+      for (let i = row + 1; i < m; i++) {
+        if (cx.abs(R[i][col]) > cx.abs(R[best][col])) best = i;
+      }
+      if (cx.abs(R[best][col]) <= tol) continue;
+      [R[row], R[best]] = [R[best], R[row]];
+      const pivot = R[row][col];
+      R[row] = R[row].map((z) => cx.div(z, pivot));
+      for (let i = 0; i < m; i++) {
+        if (i === row) continue;
+        const factor = R[i][col];
+        R[i] = R[i].map((z, j) => cx.sub(z, cx.mul(factor, R[row][j])));
+      }
+      pivots.push(col);
+      row++;
+    }
+    for (const r of R) for (let j = 0; j < n; j++) if (cx.abs(r[j]) <= tol) r[j] = [0, 0];
+    return { R, pivots };
+  }
+
+  // Eigenvectors for an eigenvalue we only know as a decimal: the kernel of
+  // A - zI, computed with decimals. Returns null if it can't be found reliably.
+  function numericEigenspace(A, z) {
+    const n = A.length;
+    const M = A.map((row, i) => row.map((x, j) => {
+      const entry = [x.toNumber(), 0];
+      return i === j ? cx.sub(entry, z) : entry;
+    }));
+    const scale = Math.max(1, ...M.flat().map(cx.abs));
+    // z is slightly off, so A - zI is only *nearly* singular: loosen the
+    // tolerance until a free variable appears.
+    for (const tol of [1e-9, 1e-7, 1e-5, 1e-3]) {
+      const { R, pivots } = numericRref(M, tol * scale);
+      const free = [];
+      for (let j = 0; j < n; j++) if (!pivots.includes(j)) free.push(j);
+      if (!free.length) continue;
+      const basis = free.map((f) => {
+        const v = Array.from({ length: n }, (_, j) => (j === f ? [1, 0] : [0, 0]));
+        pivots.forEach((p, r) => { v[p] = cx.sub([0, 0], R[r][f]); });
+        return v;
+      });
+      return { M, R, pivots, free, basis };
+    }
+    return null;
   }
 
   // The eigenspace for λ is the kernel of A - λI.
@@ -1352,8 +1416,11 @@
   // A float eigenvalue, rounded, like "1.3247" or "-0.6624 + 0.5623i".
   function decimalTex(z) {
     const round = (x) => String(Number(x.toFixed(4)));
-    if (isRealish(z)) return round(z[0]);
-    return `${round(z[0])} ${z[1] < 0 ? "-" : "+"} ${round(Math.abs(z[1]))}i`;
+    if (isRealish(z) || round(Math.abs(z[1])) === "0") return round(z[0]);
+    const size = round(Math.abs(z[1]));
+    const imaginary = (size === "1" ? "" : size) + "i";
+    if (round(z[0]) === "0") return (z[1] < 0 ? "-" : "") + imaginary;
+    return `${round(z[0])} ${z[1] < 0 ? "-" : "+"} ${imaginary}`;
   }
 
   function eigenvaluesSection(a) {
@@ -1633,11 +1700,34 @@
              ? ", which matches its algebraic multiplicity."
              : `, but its algebraic multiplicity is $${v.mult}$.`)));
     }
-    if (others.length) {
+    if (e.approxValues.length) {
       blocks.push(md(
-        "For the eigenvalues we could only write as decimals, exact eigenvectors would need " +
-        "those exact numbers, so we skip them here. Each one still has at least one " +
-        raw`eigenvector, because $A - \lambda I$ isn't invertible.`));
+        "The remaining eigenvalues are only known as decimals, so for them we row reduce " +
+        "with decimals too. These eigenvectors are **approximate** (rounded to 4 decimal " +
+        "places), but they work the same way."));
+    }
+    const decimals = (M) => M.map((row) => row.map(decimalTex));
+    for (const v of e.approxValues) {
+      const label = raw`\lambda \approx ${decimalTex(v.z)}`;
+      blocks.push(md(`**For $${label}$**${v.complex ? " (complex)" : ""}:`));
+      if (!v.space) {
+        blocks.push(md("This one is too sensitive to rounding to find reliably with decimals."));
+        continue;
+      }
+      const pivotSpots = new Set(v.space.pivots.map((col, row) => `${row},${col}`));
+      const one = v.space.free.length === 1;
+      const before = raw`A - \lambda I \approx ` + matrixTex(decimals(v.space.M));
+      const after = raw`\xrightarrow{\text{RREF}}\; ` + matrixTex(decimals(v.space.R), pivotSpots);
+      // complex decimals are wide, so give the RREF its own line
+      blocks.push(...(v.complex ? [latex(before), latex(after)] : [latex(before + raw` \;` + after)]));
+      blocks.push(
+        md(`The free ${one ? "variable" : "variables"} ${variablesPhrase(v.space.free)} ` +
+           `${one ? "gives" : "give"} the eigenspace:`),
+        latex(raw`E_{\lambda} \approx ` + spanTex(v.space.basis.map((vec) => vec.map(decimalTex)))),
+        md(`So $${label}$ has **geometric multiplicity** $${v.geo}$` +
+           (v.geo === v.mult
+             ? ", which matches its algebraic multiplicity."
+             : `, but its algebraic multiplicity is $${v.mult}$.`)));
     }
     const verdict = diagonalizableText(a);
     if (verdict) blocks.push(md(verdict));
@@ -1647,9 +1737,10 @@
   function diagonalizableText(a) {
     const e = a.eigen;
     const where = a.modulus !== null ? raw` over $\mathbb{Z}_{${a.modulus}}$` : "";
-    const short = e.values.find((v) => v.geo < v.mult);
+    const short = [...e.values, ...e.approxValues].find((v) => v.geo !== null && v.geo < v.mult);
     if (short) {
-      return `❌ $\\lambda = ${short.lambda.tex()}$ has algebraic multiplicity $${short.mult}$ ` +
+      const which = short.lambda ? `= ${short.lambda.tex()}` : `\\approx ${decimalTex(short.z)}`;
+      return `❌ $\\lambda ${which}$ has algebraic multiplicity $${short.mult}$ ` +
         `but only ${plural(short.geo, "independent eigenvector")}, so $A$ can't have ` +
         `$${a.n}$ independent eigenvectors in total. That means $A$ ` +
         `**is not diagonalizable**${where}.`;
@@ -1658,10 +1749,8 @@
       return raw`❌ Part of $p(\lambda)$ has no roots in $\mathbb{Z}_{${a.modulus}}$, so $A$ ` +
         `doesn't have enough eigenvalues there, and it **is not diagonalizable**${where}.`;
     }
-    const others = e.factors.filter((f) => f.kind === "other");
-    if (others.some((f) => f.mult > 1)) return null;
-    const complex = e.values.some((v) => v.complex) ||
-      others.some((f) => f.approx.some((z) => !isRealish(z)));
+    if (e.approxValues.some((v) => v.geo === null)) return null;
+    const complex = e.values.some((v) => v.complex) || e.approxValues.some((v) => v.complex);
     const verdict = "✅ Every eigenvalue has as many independent eigenvectors as its algebraic " +
       `multiplicity, so together they give $${a.n}$ independent eigenvectors. That means $A$ ` +
       `**is diagonalizable**${where}`;
