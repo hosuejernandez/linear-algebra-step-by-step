@@ -18,6 +18,10 @@
     --accent-soft: #e8f0fd;
     --error-bg: #fdecec;
     --error-text: #a12626;
+    --yes-bg: #eaf7ee;
+    --yes-border: #9fd8b3;
+    --no-bg: #fdeeee;
+    --no-border: #f0b0b0;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -30,6 +34,10 @@
       --accent-soft: #1f2a3d;
       --error-bg: #3a1d1d;
       --error-text: #f5a3a3;
+      --yes-bg: #16301f;
+      --yes-border: #2f6b45;
+      --no-bg: #361c1c;
+      --no-border: #7a3434;
     }
   }
   * { box-sizing: border-box; }
@@ -134,18 +142,26 @@
   .mod-n input:disabled { opacity: 0.45; }
   .mod-n input.bad { border-color: var(--error-text); background: var(--error-bg); }
 
-  .examples { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
-  .examples .label { color: var(--muted); font-size: 0.9rem; margin-right: 4px; }
-  .examples button {
-    border: 1px solid var(--border);
-    background: var(--card);
-    color: var(--text);
-    border-radius: 999px;
-    padding: 5px 12px;
-    font-size: 0.9rem;
-    cursor: pointer;
+  /* "At a glance": one tile per fact. Add a tile for anything new (e.g. eigenvalues). */
+  .summary { margin-top: 12px; }
+  .summary .label { color: var(--muted); font-size: 0.9rem; margin-bottom: 8px; }
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 8px;
   }
-  .examples button:hover, .stepper button:hover:not(:disabled) {
+  .tile {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 12px;
+    background: var(--bg);
+  }
+  .tile .name { color: var(--muted); font-size: 0.85rem; }
+  .tile .value { font-size: 1.1rem; font-weight: 600; }
+  .tile.yes { border-color: var(--yes-border); background: var(--yes-bg); }
+  .tile.no { border-color: var(--no-border); background: var(--no-bg); }
+
+  .stepper button:hover:not(:disabled) {
     border-color: var(--accent);
     background: var(--accent-soft);
   }
@@ -190,7 +206,7 @@
       </div>
     </div>
     <div class="matrix-wrap"><div class="matrix" id="matrix"></div></div>
-    <div class="examples" id="examples"><span class="label">Try an example:</span></div>
+    <div class="summary" id="summary"></div>
     <div class="options">
       <div class="mod-row">
         <label><input type="checkbox" id="mod-on"> Work in ℤ mod n</label>
@@ -208,19 +224,12 @@
 <script>
   const MAX_SIZE = 6;
 
-  const EXAMPLES = {
-    "Identity (3×3)": [["1", "0", "0"], ["0", "1", "0"], ["0", "0", "1"]],
-    "Wide (3×4)": [["1", "2", "0", "3"], ["2", "4", "1", "7"], ["3", "6", "1", "10"]],
-    "Singular (3×3)": [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"]],
-    "Tall (3×2)": [["1", "0"], ["0", "1"], ["1", "1"]],
-    "Fractions (2×2)": [["1/2", "-3/4"], ["2", "5"]],
-  };
-
-  // What the user has typed, one string per box.
-  let grid = EXAMPLES["Wide (3×4)"].map((row) => row.slice());
+  // What the user has typed, one string per box. It starts with a sample matrix.
+  let grid = [["1", "2", "0", "3"], ["2", "4", "1", "7"], ["3", "6", "1", "10"]];
 
   const matrixBox = document.getElementById("matrix");
   const errorsBox = document.getElementById("errors");
+  const summaryBox = document.getElementById("summary");
   const resultsBox = document.getElementById("results");
 
   // ---------------------------------------------------------------------
@@ -273,19 +282,6 @@
       resize(rows, cols);
     })
   );
-
-  const examplesBox = document.getElementById("examples");
-  for (const [name, example] of Object.entries(EXAMPLES)) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = name;
-    button.addEventListener("click", () => {
-      grid = example.map((row) => row.slice());
-      drawGrid();
-      update();
-    });
-    examplesBox.appendChild(button);
-  }
 
   // ---------------------------------------------------------------------
   // Showing the explanation
@@ -350,6 +346,28 @@
   modN.addEventListener("focus", () => modN.select());
   showSteps.addEventListener("change", update);
 
+  // The "At a glance" tiles. Each tile is [name, value, "yes" | "no" | ""].
+  function showSummary(a) {
+    const check = (name, ok) => [name, ok ? "✅ Yes" : "❌ No", ok ? "yes" : "no"];
+    const tiles = [
+      check("Injective", a.injective),
+      check("Surjective", a.surjective),
+      check("Invertible", a.invertible),
+      ["Rank", String(a.rank), ""],
+      ["Nullity", String(a.nullity), ""],
+    ];
+    if (a.det !== null) {
+      const mod = a.modulus === null ? "" : String.raw`\pmod{${a.modulus}}`;
+      tiles.push(["Determinant", math(a.det.tex() + mod, false), ""]);
+    }
+    summaryBox.innerHTML =
+      '<div class="label">At a glance:</div><div class="tiles">' +
+      tiles.map(([name, value, kind]) =>
+        `<div class="tile ${kind}"><div class="name">${name}</div>` +
+        `<div class="value">${value}</div></div>`).join("") +
+      "</div>";
+  }
+
   function update() {
     // null means the normal mode (exact fractions).
     let modulus = null;
@@ -363,10 +381,11 @@
     showErrors(modError ? [modError, ...errors] : errors);
     // Keep the last good explanation on screen (faded) while something is being fixed.
     const ready = matrix && !modError;
-    resultsBox.style.opacity = ready ? 1 : 0.35;
+    resultsBox.style.opacity = summaryBox.style.opacity = ready ? 1 : 0.35;
     if (!ready) return;
-    const sections = MatrixMath.explain(MatrixMath.analyze(matrix, modulus),
-                                        { showSteps: showSteps.checked });
+    const analysis = MatrixMath.analyze(matrix, modulus);
+    showSummary(analysis);
+    const sections = MatrixMath.explain(analysis, { showSteps: showSteps.checked });
     resultsBox.innerHTML = sections
       .map(([title, blocks], k) =>
         `<section class="card section"><h2><span class="num">${k + 1}.</span>${title}</h2>` +
