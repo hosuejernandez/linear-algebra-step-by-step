@@ -704,6 +704,106 @@
   }
 
   // -------------------------------------------------------------------------
+  // Axler's method (no determinants)
+  // -------------------------------------------------------------------------
+  // In an n-dimensional space, v, Av, A²v, ..., Aⁿv must be dependent. The
+  // first dependence gives a polynomial q with q(A)v = 0, and every root of q
+  // is an eigenvalue. Repeating with e₁, e₂, ... until the vectors span the
+  // whole space finds every eigenvalue.
+
+  function matVec(A, v) {
+    return A.map((row) => row.reduce((sum, x, j) => sum.add(x.mul(v[j])), v[0].zero()));
+  }
+
+  function matMul(A, B) {
+    const zero = A[0][0].zero();
+    return A.map((row) => B[0].map((_, j) => row.reduce((sum, x, k) => sum.add(x.mul(B[k][j])), zero)));
+  }
+
+  // Rank of a list of column vectors.
+  function rankOf(vectors) {
+    if (!vectors.length) return 0;
+    return rref(vectors[0].map((_, i) => vectors.map((v) => v[i]))).pivots.length;
+  }
+
+  // Multiply by A until the list v, Av, A²v, ... becomes dependent.
+  // Returns the vectors, the matrix K with them as columns and its RREF, and
+  // q(z) = zᵏ - Σ rᵢ zⁱ where Aᵏv = Σ rᵢ Aⁱv.
+  function firstDependence(A, v) {
+    const vectors = [v];
+    for (;;) {
+      const next = matVec(A, vectors[vectors.length - 1]);
+      const k = vectors.length;
+      const columns = [...vectors, next];
+      const K = v.map((_, i) => columns.map((c) => c[i]));
+      const { R, pivots } = rref(K);
+      if (!pivots.includes(k)) {
+        // The earlier columns are independent, so their pivots sit in rows 0..k-1.
+        const r = Array.from({ length: k }, (_, i) => R[i][k]);
+        const q = [...r.map((x) => x.neg()), v[0].one()];
+        return { vectors: columns, K, R, pivots, r, q };
+      }
+      vectors.push(next);
+    }
+  }
+
+  function factorKey(f) {
+    if (f.kind === "linear") return "L" + f.root;
+    if (f.kind === "quadratic") return `Q${f.s},${f.q}`;
+    return "O" + f.poly.map(String).join(",");
+  }
+
+  // Axler's multiplicity: the dimension of null (A - λI)ⁿ.
+  function generalizedDimension(A, lambda) {
+    const M = A.map((row, i) => row.map((x, j) => (i === j ? x.sub(lambda) : x)));
+    let power = M;
+    for (let k = 1; k < A.length; k++) power = matMul(power, M);
+    return solveHomogeneous(power).basis.length;
+  }
+
+  function axlerAnalysis(A, modulus) {
+    const n = A.length;
+    if (modulus !== null && modulus > MAX_EIGEN_SEARCH) return { tooBig: true };
+    const zero = A[0][0].zero();
+    const one = A[0][0].one();
+    const runs = [];
+    const found = new Map(); // factor key -> factor
+    const generated = []; // every independent v, Av, A²v, ... so far
+    for (let j = 0; j < n && rankOf(generated) < n; j++) {
+      const e = Array.from({ length: n }, (_, i) => (i === j ? one : zero));
+      if (rankOf([...generated, e]) === rankOf(generated)) {
+        runs.push({ j, skipped: true });
+        continue;
+      }
+      const run = firstDependence(A, e);
+      const factored = modulus === null
+        ? { factors: factorOverQ(run.q), rest: null }
+        : factorModP(run.q, modulus);
+      const fresh = factored.factors.filter((f) => !found.has(factorKey(f)));
+      for (const f of fresh) found.set(factorKey(f), f);
+      generated.push(...run.vectors.slice(0, -1));
+      runs.push({ j, ...run, factored: { poly: run.q, ...factored }, fresh, span: rankOf(generated) });
+    }
+
+    // Every eigenvalue we can write exactly, with Axler's multiplicity.
+    const factors = [...found.values()];
+    const linear = factors.filter((f) => f.kind === "linear")
+      .sort((x, y) => (modulus === null ? x.root.sub(y.root).toNumber() : Number(x.root.v - y.root.v)));
+    const values = linear.map((f) => ({
+      lambda: f.root, complex: false, mult: generalizedDimension(A, f.root),
+    }));
+    for (const f of factors.filter((g) => g.kind === "quadratic")) {
+      const Ad = A.map((row) => row.map((x) => new QSqrt(x, ZERO, f.d)));
+      for (const r of f.roots) {
+        values.push({ lambda: r, complex: f.d < 0n, mult: generalizedDimension(Ad, r) });
+      }
+    }
+    const others = factors.filter((f) => f.kind === "other");
+    const missing = runs.some((run) => run.factored && run.factored.rest);
+    return { tooBig: false, runs, values, others, missing };
+  }
+
+  // -------------------------------------------------------------------------
   // LaTeX helpers
   // -------------------------------------------------------------------------
 
@@ -827,7 +927,7 @@
     if (a.m === a.n) sections.push(["Determinant and Inverse", squareExtras(a)]);
     sections.push(
       ["The Rank–Nullity Theorem", rankNullity(a)],
-      ["Eigenvalues", eigenvaluesSection(a)],
+      ["Eigenvalues", options.axler ? axlerSection(a) : eigenvaluesSection(a)],
       ["Eigenvectors", eigenvectorsSection(a)]);
     return sections;
   }
@@ -1207,14 +1307,15 @@
       raw`$${a.m} \times ${a.n}$.`)];
   }
 
-  // A polynomial in λ, highest power first, like "-\lambda^{3} + 2\lambda - 1".
-  function polyTex(p) {
+  // A polynomial in λ (or another variable), highest power first,
+  // like "-\lambda^{3} + 2\lambda - 1".
+  function polyTex(p, v = "\\lambda") {
     const terms = [];
     for (let k = p.length - 1; k >= 0; k--) {
       const c = p[k];
       if (c.isZero()) continue;
       const size = c.abs();
-      const power = k === 0 ? "" : k === 1 ? "\\lambda" : `\\lambda^{${k}}`;
+      const power = k === 0 ? "" : k === 1 ? v : `${v}^{${k}}`;
       const coefficient = k > 0 && size.isOne() ? "" : size.tex();
       terms.push([c.isNegative(), coefficient + power]);
     }
@@ -1224,23 +1325,23 @@
       .join("");
   }
 
-  function linearTex(root) {
-    if (root.isZero()) return "\\lambda";
-    return root.isNegative() ? `\\lambda + ${root.abs().tex()}` : `\\lambda - ${root.tex()}`;
+  function linearTex(root, v = "\\lambda") {
+    if (root.isZero()) return v;
+    return root.isNegative() ? `${v} + ${root.abs().tex()}` : `${v} - ${root.tex()}`;
   }
 
-  // p(λ) written as a product of its factors.
-  function factoredTex(e) {
+  // A polynomial written as a product of its factors.
+  function factoredTex(e, v = "\\lambda") {
     const lead = trimPoly(e.poly)[degree(e.poly)];
     let out = lead.isOne() ? "" : lead.neg().isOne() ? "-" : lead.tex();
     const power = (m) => (m > 1 ? `^{${m}}` : "");
     const pieces = e.factors.map((f) => {
       if (f.kind === "linear") {
-        return f.root.isZero() ? "\\lambda" + power(f.mult) : `(${linearTex(f.root)})${power(f.mult)}`;
+        return f.root.isZero() ? v + power(f.mult) : `(${linearTex(f.root, v)})${power(f.mult)}`;
       }
-      return `(${polyTex(f.poly)})${power(f.mult)}`;
+      return `(${polyTex(f.poly, v)})${power(f.mult)}`;
     });
-    if (e.rest) pieces.push(`(${polyTex(e.rest)})`);
+    if (e.rest) pieces.push(`(${polyTex(e.rest, v)})`);
     // A lone factor like (λ² + 1) doesn't need its parentheses.
     if (out === "" && pieces.length === 1 && /^\(.*\)$/.test(pieces[0])) {
       return pieces[0].slice(1, -1);
@@ -1349,6 +1450,155 @@
     return blocks;
   }
 
+  // The Eigenvalues section using Axler's method instead of determinants.
+  function axlerSection(a) {
+    if (a.m !== a.n) return nonSquareEigen(a);
+    const x = axlerAnalysis(a.A, a.modulus);
+    const p = a.modulus;
+    const whole = space(a, a.n);
+    const intro = md(
+      raw`An **eigenvalue** of $A$ is a number $\lambda$ for which some **nonzero** vector ` +
+      raw`$\vec{v}$ satisfies $A\vec{v} = \lambda\vec{v}$. In other words, $A$ doesn't change ` +
+      raw`the direction of $\vec{v}$; it only stretches it by a factor of $\lambda$.`);
+    if (x.tooBig) {
+      return [intro, md(
+        raw`To find roots in $\mathbb{Z}_{${p}}$ we would have to try every number from $0$ to ` +
+        `$${p - 1n}$, which is too many to check here. Pick a prime under 100,000 to see the ` +
+        "eigenvalues.")];
+    }
+
+    const blocks = [intro, md(
+      "**Axler's method** finds eigenvalues without determinants. The key fact: in " +
+      `$${whole}$, any $${a.n + 1}$ vectors are linearly dependent. So if we start with a ` +
+      raw`nonzero vector $\vec{v}$ and keep multiplying by $A$, the list ` +
+      raw`$\vec{v}, A\vec{v}, A^{2}\vec{v}, \dots$ must become dependent by the time we reach ` +
+      raw`$A^{${a.n}}\vec{v}$.`)];
+
+    const name = (i) => (i === 0 ? raw`\vec{v}` : i === 1 ? raw`A\vec{v}` : raw`A^{${i}}\vec{v}`);
+    const eigenTex = (f) => {
+      if (f.kind === "linear") return [raw`\lambda = ${f.root.tex()}`];
+      if (f.kind === "quadratic") return [raw`\lambda = ${f.roots[0].tex(true)}`];
+      return f.approx.map((z) => raw`\lambda \approx ${decimalTex(z)}`);
+    };
+    let explainedWhy = false;
+
+    x.runs.forEach((run, index) => {
+      const e = raw`\vec{e}_{${run.j + 1}}`;
+      if (run.skipped) {
+        blocks.push(md(`We skip $${e}$: it's already in the span of the vectors we've found, ` +
+                       "so it can't lead to anything new."));
+        return;
+      }
+      const k = run.vectors.length - 1;
+      const pivotSpots = new Set(run.pivots.map((col, row) => `${row},${col}`));
+      const terms = run.r.map((c, i) => [c, name(i)]).filter(([c]) => !c.isZero());
+      const combination = terms.length
+        ? terms.map(([c, label], t) => {
+            const size = c.abs();
+            const sign = c.isNegative() ? (t === 0 ? "-" : " - ") : t === 0 ? "" : " + ";
+            return sign + (size.isOne() ? "" : size.tex()) + label;
+          }).join("")
+        : raw`\vec{0}`;
+
+      blocks.push(
+        md(`**Start with $\\vec{v} = ${e}$.** Multiplying by $A$ again and again:`),
+        latex(run.vectors.map((vec, i) => name(i) + " = " + vectorTex(vec)).join(raw`,\quad `)),
+        md("To find the first dependence, row reduce the matrix with these vectors as columns:"),
+        latex(matrixTex(run.K) + raw` \;\xrightarrow{\text{RREF}}\; ` + matrixTex(run.R, pivotSpots)),
+        md(`The last column, $${name(k)}$, has no pivot, so it's a combination of the ` +
+           "earlier ones:"),
+        latex(name(k) + " = " + combination),
+        md(raw`Moving everything to one side gives $q(A)\vec{v} = \vec{0}$, where`),
+        latex("q(z) = " + polyTex(run.q, "z")));
+
+      const factored = factoredTex(run.factored, "z");
+      if (factored !== polyTex(run.q, "z")) blocks.push(latex("q(z) = " + factored));
+      for (const f of run.factored.factors) {
+        if (f.kind === "quadratic") {
+          blocks.push(md(
+            `The factor $${polyTex(f.poly, "z")}$ has no fraction roots; the quadratic formula ` +
+            `gives $z = ${f.roots[0].tex(true)}$` +
+            (f.d < 0n ? ", which are **complex** (a conjugate pair)." : ".")));
+        }
+        if (f.kind === "other") {
+          blocks.push(md(
+            `The factor $${polyTex(f.poly, "z")}$ has roots that can't be written with just ` +
+            "fractions and square roots, so we give them as decimals."));
+        }
+      }
+      if (run.factored.rest) {
+        blocks.push(md(
+          `The factor $${polyTex(run.factored.rest, "z")}$ has **no roots** in ` +
+          raw`$\mathbb{Z}_{${p}}$, so it doesn't give any eigenvalues.`));
+      }
+
+      if (!explainedWhy) {
+        explainedWhy = true;
+        blocks.push(md(
+          raw`**Why are the roots of $q$ eigenvalues?** Suppose $q(\lambda) = 0$. Then ` +
+          raw`$q(z) = (z - \lambda)\,s(z)$ for a polynomial $s$ of smaller degree. Because this ` +
+          raw`was the **first** dependence, $\vec{w} = s(A)\vec{v}$ is not $\vec{0}$. But ` +
+          raw`$(A - \lambda I)\vec{w} = q(A)\vec{v} = \vec{0}$, so $A\vec{w} = \lambda\vec{w}$. ` +
+          raw`That makes $\vec{w}$ an eigenvector and $\lambda$ an eigenvalue.`));
+      }
+
+      const fresh = run.fresh.flatMap(eigenTex).map((t) => `$${t}$`);
+      // a ± pair counts as two eigenvalues
+      const count = run.fresh.reduce(
+        (sum, f) => sum + (f.kind === "linear" ? 1 : f.kind === "quadratic" ? 2 : f.approx.length), 0);
+      blocks.push(md(fresh.length
+        ? `New ${count === 1 ? "eigenvalue" : "eigenvalues"} from this vector: ` +
+          `${andList(fresh)}.`
+        : "This vector doesn't give any new eigenvalues."));
+
+      const moreToDo = x.runs.slice(index + 1).some((later) => !later.skipped);
+      if (moreToDo) {
+        blocks.push(md(
+          `So far our vectors only span a $${run.span}$-dimensional part of $${whole}$, so there ` +
+          "might be eigenvalues we haven't seen yet. Let's try another starting vector."));
+      }
+    });
+
+    blocks.push(md(
+      `Now the vectors we've generated span all of $${whole}$, so multiplying together all the ` +
+      raw`polynomials $q$ we found gives a polynomial that sends **every** vector to $\vec{0}$. ` +
+      raw`If $A\vec{w} = \lambda\vec{w}$ with $\vec{w} \neq \vec{0}$, that product sends $\vec{w}$ ` +
+      raw`to (the product evaluated at $\lambda$) $\cdot\,\vec{w}$, so $\lambda$ must be a root of ` +
+      "one of those polynomials. **We've found every eigenvalue.**"));
+
+    if (!x.values.length && !x.others.length) {
+      blocks.push(md(raw`So $A$ has **no eigenvalues** in $\mathbb{Z}_{${p}}$.`));
+      return blocks;
+    }
+
+    const complexTag = raw`\text{, complex}`;
+    const rows = x.values.map((v) =>
+      raw`\lambda &= ${v.lambda.tex()} && \dim \operatorname{null}(A - \lambda I)^{${a.n}} = ${v.mult}` +
+      (v.complex ? complexTag : ""));
+    for (const f of x.others) {
+      for (const z of f.approx) {
+        rows.push(raw`\lambda &\approx ${decimalTex(z)}` + (isRealish(z) ? "" : raw` && \text{complex}`));
+      }
+    }
+    const total = x.values.reduce((sum, v) => sum + v.mult, 0);
+    let ending = "";
+    if (x.others.length) {
+      ending = "(For the decimal eigenvalues we can't compute this exactly.)";
+    } else if (total === a.n) {
+      ending = `These add up to $${a.n}$, the size of the matrix.`;
+    } else if (x.missing) {
+      ending = `These add up to only $${total}$, less than $${a.n}$, because some of the ` +
+        raw`polynomials $q$ have factors with no roots in $\mathbb{Z}_{${p}}$.`;
+    }
+    blocks.push(
+      md("Axler defines the **multiplicity** of an eigenvalue $\\lambda$ as " +
+         raw`$\dim \operatorname{null}(A - \lambda I)^{${a.n}}$ (the dimension of its ` +
+         "**generalized eigenspace**). So the eigenvalues are:"),
+      latex(raw`\begin{aligned}` + rows.join(raw` \\ `) + raw`\end{aligned}`));
+    if (ending) blocks.push(md(ending));
+    return blocks;
+  }
+
   function eigenvectorsSection(a) {
     if (a.m !== a.n) return nonSquareEigen(a);
     const e = a.eigen;
@@ -1439,6 +1689,7 @@
 
   const api = {
     Frac, ModP, QSqrt, parseEntry, parseGrid, parseModulus, analyze, explain, eigenSummary,
+    axlerAnalysis,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else window.MatrixMath = api;

@@ -249,6 +249,7 @@
           autocomplete="off" aria-label="n, the modulus" disabled></label>
       </div>
       <label><input type="checkbox" id="show-steps"> Would you like to see the steps for RREF?</label>
+      <label><input type="checkbox" id="axler"> Find eigenvalues with Axler's method (no determinants)</label>
     </div>
     <div class="errors" id="errors" hidden></div>
   </div>
@@ -377,6 +378,7 @@
   const modOn = document.getElementById("mod-on");
   const modN = document.getElementById("mod-n");
   const showSteps = document.getElementById("show-steps");
+  const axler = document.getElementById("axler");
 
   modOn.addEventListener("change", () => {
     modN.disabled = !modOn.checked;
@@ -385,6 +387,7 @@
   modN.addEventListener("input", scheduleUpdate);
   modN.addEventListener("focus", () => modN.select());
   showSteps.addEventListener("change", update);
+  axler.addEventListener("change", update);
 
   // The "At a glance" tiles. Each tile is [name, value as HTML, extra class].
   function showSummary(a) {
@@ -448,7 +451,8 @@
     if (!ready) return;
     const analysis = MatrixMath.analyze(matrix, modulus);
     showSummary(analysis);
-    const sections = MatrixMath.explain(analysis, { showSteps: showSteps.checked });
+    const sections = MatrixMath.explain(analysis,
+                                        { showSteps: showSteps.checked, axler: axler.checked });
     resultsBox.innerHTML = sections
       .map(([title, blocks], k) =>
         `<details class="card section" data-title="${title}"${openSections.has(title) ? " open" : ""}>` +
