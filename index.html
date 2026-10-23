@@ -18,10 +18,8 @@
     --accent-soft: #e8f0fd;
     --error-bg: #fdecec;
     --error-text: #a12626;
-    --yes-bg: #eaf7ee;
-    --yes-border: #9fd8b3;
-    --no-bg: #fdeeee;
-    --no-border: #f0b0b0;
+    --yes: #1e8a4c;
+    --no: #b5473c;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -34,10 +32,8 @@
       --accent-soft: #1f2a3d;
       --error-bg: #3a1d1d;
       --error-text: #f5a3a3;
-      --yes-bg: #16301f;
-      --yes-border: #2f6b45;
-      --no-bg: #361c1c;
-      --no-border: #7a3434;
+      --yes: #5fcf8e;
+      --no: #e8877d;
     }
   }
   * { box-sizing: border-box; }
@@ -158,8 +154,9 @@
   }
   .tile .name { color: var(--muted); font-size: 0.85rem; }
   .tile .value { font-size: 1.1rem; font-weight: 600; }
-  .tile.yes { border-color: var(--yes-border); background: var(--yes-bg); }
-  .tile.no { border-color: var(--no-border); background: var(--no-bg); }
+  .tile.wide { grid-column: 1 / -1; }
+  .tile .yes { color: var(--yes); }
+  .tile .no { color: var(--no); }
 
   .stepper button:hover:not(:disabled) {
     border-color: var(--accent);
@@ -176,7 +173,45 @@
   .errors ul { margin: 6px 0 0; padding-left: 20px; }
 
   /* --- output --- */
-  .section h2 { font-size: 1.25rem; margin: 0 0 8px; }
+  .section-tools {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    color: var(--muted);
+    margin: 4px 4px 8px;
+  }
+  .section-tools button {
+    border: none;
+    background: none;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  .section-tools button:hover { text-decoration: underline; }
+
+  details.section { padding: 0; margin-bottom: 10px; }
+  details.section > summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 20px;
+    cursor: pointer;
+    list-style: none;
+    border-radius: 12px;
+  }
+  details.section > summary::-webkit-details-marker { display: none; }
+  details.section > summary::before {
+    content: "▸";
+    color: var(--muted);
+    transition: transform 0.15s;
+  }
+  details.section[open] > summary::before { transform: rotate(90deg); }
+  details.section > summary:hover { background: var(--accent-soft); }
+  details.section > summary:focus-visible { outline: 2px solid var(--accent); }
+  details.section .body { padding: 0 20px 16px; }
+  .section h2 { font-size: 1.2rem; margin: 0; }
   .section h2 .num { color: var(--accent); margin-right: 6px; }
   .section p { margin: 10px 0; }
   .formula { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
@@ -186,8 +221,8 @@
 <body>
 <main>
   <h1>Matrix Explainer</h1>
-  <p class="lead">Type in a matrix and see its kernel, image, and whether it is injective,
-    surjective, and invertible, with every step explained. Entries can be whole numbers,
+  <p class="lead">Type in a matrix and see its kernel, image, eigenvalues, and whether it is
+    injective, surjective, and invertible, with every step explained. Entries can be whole numbers,
     decimals, or fractions like <code>-3/4</code>.</p>
 
   <div class="card">
@@ -218,6 +253,11 @@
     <div class="errors" id="errors" hidden></div>
   </div>
 
+  <div class="section-tools">
+    <button type="button" data-open-all="true">Open all</button>
+    <span aria-hidden="true">·</span>
+    <button type="button" data-open-all="false">Close all</button>
+  </div>
   <div id="results"></div>
 </main>
 
@@ -346,9 +386,10 @@
   modN.addEventListener("focus", () => modN.select());
   showSteps.addEventListener("change", update);
 
-  // The "At a glance" tiles. Each tile is [name, value, "yes" | "no" | ""].
+  // The "At a glance" tiles. Each tile is [name, value as HTML, extra class].
   function showSummary(a) {
-    const check = (name, ok) => [name, ok ? "✅ Yes" : "❌ No", ok ? "yes" : "no"];
+    const check = (name, ok) =>
+      [name, ok ? '<span class="yes">✓ Yes</span>' : '<span class="no">✗ No</span>', ""];
     const tiles = [
       check("Injective", a.injective),
       check("Surjective", a.surjective),
@@ -360,13 +401,35 @@
       const mod = a.modulus === null ? "" : String.raw`\pmod{${a.modulus}}`;
       tiles.push(["Determinant", math(a.det.tex() + mod, false), ""]);
     }
+    const eigenvalues = MatrixMath.eigenSummary(a);
+    if (eigenvalues !== null) tiles.push(["Eigenvalues", math(eigenvalues, false), "wide"]);
     summaryBox.innerHTML =
       '<div class="label">At a glance:</div><div class="tiles">' +
-      tiles.map(([name, value, kind]) =>
-        `<div class="tile ${kind}"><div class="name">${name}</div>` +
+      tiles.map(([name, value, extra]) =>
+        `<div class="tile ${extra}"><div class="name">${name}</div>` +
         `<div class="value">${value}</div></div>`).join("") +
       "</div>";
   }
+
+  // ---------------------------------------------------------------------
+  // Dropdown sections: remember which ones are open while the page redraws
+  // ---------------------------------------------------------------------
+
+  const openSections = new Set(["The Setup", "Row Reduce to RREF"]);
+
+  // "toggle" doesn't bubble, so listen while it travels down (capture).
+  resultsBox.addEventListener("toggle", (event) => {
+    const title = event.target.dataset.title;
+    if (event.target.open) openSections.add(title);
+    else openSections.delete(title);
+  }, true);
+
+  document.querySelectorAll("[data-open-all]").forEach((button) =>
+    button.addEventListener("click", () => {
+      const open = button.dataset.openAll === "true";
+      resultsBox.querySelectorAll("details").forEach((section) => { section.open = open; });
+    })
+  );
 
   function update() {
     // null means the normal mode (exact fractions).
@@ -388,14 +451,15 @@
     const sections = MatrixMath.explain(analysis, { showSteps: showSteps.checked });
     resultsBox.innerHTML = sections
       .map(([title, blocks], k) =>
-        `<section class="card section"><h2><span class="num">${k + 1}.</span>${title}</h2>` +
+        `<details class="card section" data-title="${title}"${openSections.has(title) ? " open" : ""}>` +
+        `<summary><h2><span class="num">${k + 1}.</span>${title}</h2></summary><div class="body">` +
         blocks
           .map(([kind, content]) =>
             kind === "latex"
               ? `<div class="formula">${math(content, true)}</div>`
               : `<p>${renderSentence(content)}</p>`)
           .join("") +
-        "</section>")
+        "</div></details>")
       .join("");
   }
 

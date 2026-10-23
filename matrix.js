@@ -42,6 +42,8 @@
     inverse() { return ONE.div(this); }
     zero() { return ZERO; }
     one() { return ONE; }
+    fromInt(k) { return new Frac(BigInt(k)); }
+    toNumber() { return Number(this.n) / Number(this.d); }
     isZero() { return this.n === 0n; }
     isOne() { return this.n === 1n && this.d === 1n; }
     isInteger() { return this.d === 1n; }
@@ -87,6 +89,7 @@
     }
     zero() { return this.make(0n); }
     one() { return this.make(1n); }
+    fromInt(k) { return this.make(BigInt(k)); }
     isZero() { return this.v === 0n; }
     isOne() { return this.v === 1n; }
     isInteger() { return true; }
@@ -99,6 +102,73 @@
   function fracToModP(f, p) {
     if (f.d % p === 0n) return null;
     return new ModP(f.n, p).div(new ModP(f.d, p));
+  }
+
+  // -------------------------------------------------------------------------
+  // Numbers a + b√d (a, b fractions), used for eigenvalues like 1 + √2.
+  // When d is negative this is a complex number: √-1 = i.
+  // -------------------------------------------------------------------------
+
+  class QSqrt {
+    constructor(a, b, d) {
+      this.a = a;
+      this.b = b;
+      this.d = d;
+    }
+    make(a, b) { return new QSqrt(a, b, this.d); }
+    add(o) { return this.make(this.a.add(o.a), this.b.add(o.b)); }
+    sub(o) { return this.make(this.a.sub(o.a), this.b.sub(o.b)); }
+    mul(o) {
+      const d = new Frac(this.d);
+      return this.make(this.a.mul(o.a).add(this.b.mul(o.b).mul(d)),
+                       this.a.mul(o.b).add(this.b.mul(o.a)));
+    }
+    // 1 / (a + b√d) = (a - b√d) / (a² - d·b²)
+    inverse() {
+      const norm = this.a.mul(this.a).sub(this.b.mul(this.b).mul(new Frac(this.d)));
+      if (norm.isZero()) throw new Error("division by zero");
+      return this.make(this.a.div(norm), this.b.neg().div(norm));
+    }
+    div(o) { return this.mul(o.inverse()); }
+    neg() { return this.make(this.a.neg(), this.b.neg()); }
+    abs() { return this.isNegative() ? this.neg() : this; }
+    zero() { return this.make(ZERO, ZERO); }
+    one() { return this.make(ONE, ZERO); }
+    fromInt(k) { return this.make(new Frac(BigInt(k)), ZERO); }
+    isZero() { return this.a.isZero() && this.b.isZero(); }
+    isOne() { return this.a.isOne() && this.b.isZero(); }
+    isInteger() { return this.b.isZero() && this.a.isInteger(); }
+    isNegative() { return this.a.isZero() ? this.b.isNegative() : this.a.isNegative(); }
+    equals(o) { return this.a.equals(o.a) && this.b.equals(o.b); }
+    toString() { return `${this.a} + ${this.b}*sqrt(${this.d})`; }
+    // As an ordinary complex number [real, imaginary] (only for checking).
+    toComplex() {
+      const root = Math.sqrt(Math.abs(Number(this.d)));
+      const a = this.a.toNumber();
+      const b = this.b.toNumber();
+      return this.d < 0n ? [a, b * root] : [a + b * root, 0];
+    }
+    rootTex() {
+      if (this.d === -1n) return "i";
+      if (this.d < 0n) return `\\sqrt{${-this.d}}\\,i`;
+      return `\\sqrt{${this.d}}`;
+    }
+    // With pm = true, writes a ± b√d (for showing a conjugate pair at once).
+    tex(pm = false) {
+      const { a, b } = this;
+      if (b.isZero()) return a.tex();
+      const root = this.rootTex();
+      const size = b.abs();
+      const sign = pm ? "\\pm" : b.isNegative() ? "-" : "+";
+      const top = (size.n === 1n ? "" : `${size.n}`) + root;
+      // (1 + √5)/2 reads better than 1/2 + √5/2
+      if (!a.isZero() && a.d === size.d && a.d > 1n) {
+        return `\\frac{${a.n} ${sign} ${top}}{${a.d}}`;
+      }
+      const bPart = size.d === 1n ? top : `\\frac{${top}}{${size.d}}`;
+      if (a.isZero()) return pm ? `\\pm ${bPart}` : `${b.isNegative() ? "-" : ""}${bPart}`;
+      return `${a.tex()} ${sign} ${bPart}`;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -274,18 +344,19 @@
     return A.map((row) => row[j]);
   }
 
-  // `modulus` is null for the normal mode, or the prime p for ℤ mod p.
-  function analyze(A, modulus = null) {
-    const m = A.length;
-    const n = A[0].length;
-    const zero = A[0][0].zero();
-    const one = A[0][0].one();
-    const { R, pivots, steps } = rref(A);
+  // Solve M x = 0 by row reducing. Returns the RREF, its pivots and free
+  // columns, each x_j written in terms of the free variables, and a basis
+  // for the solutions (the kernel of M).
+  function solveHomogeneous(M) {
+    const n = M[0].length;
+    const zero = M[0][0].zero();
+    const one = M[0][0].one();
+    const { R, pivots, steps } = rref(M);
     const free = [];
     for (let j = 0; j < n; j++) if (!pivots.includes(j)) free.push(j);
 
-    // Solve A x = 0. Each x_j is written as a combination of the free
-    // variables: a Map from free column -> coefficient.
+    // Each x_j is a combination of the free variables: a Map from free
+    // column -> coefficient.
     const general = Array.from({ length: n }, (_, j) => new Map([[j, one]]));
     pivots.forEach((p, row) => {
       const coefficients = new Map();
@@ -295,8 +366,16 @@
       general[p] = coefficients;
     });
 
-    // One kernel basis vector per free variable: its coefficients.
-    const kernelBasis = free.map((f) => general.map((c) => c.get(f) || zero));
+    // One basis vector per free variable: its coefficients.
+    const basis = free.map((f) => general.map((c) => c.get(f) || zero));
+    return { R, pivots, steps, free, general, basis };
+  }
+
+  // `modulus` is null for the normal mode, or the prime p for ℤ mod p.
+  function analyze(A, modulus = null) {
+    const m = A.length;
+    const n = A[0].length;
+    const { R, pivots, steps, free, general, basis: kernelBasis } = solveHomogeneous(A);
     const imageBasis = pivots.map((p) => column(A, p));
 
     const rank = pivots.length;
@@ -310,7 +389,318 @@
       rank, nullity, injective, surjective, invertible,
       det: m === n ? determinant(A) : null,
       inverse: invertible ? inverse(A) : null,
+      eigen: m === n ? eigenAnalysis(A, modulus) : null,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Polynomials (for eigenvalues)
+  // -------------------------------------------------------------------------
+  // A polynomial is an array of coefficients, constant term first:
+  // [c0, c1, c2] means c0 + c1·λ + c2·λ².
+
+  function trimPoly(p) {
+    let k = p.length;
+    while (k > 1 && p[k - 1].isZero()) k--;
+    return p.slice(0, k);
+  }
+
+  const isZeroPoly = (p) => p.every((c) => c.isZero());
+  const degree = (p) => trimPoly(p).length - 1;
+
+  function polyAdd(p, q) {
+    const zero = p[0].zero();
+    const length = Math.max(p.length, q.length);
+    return trimPoly(Array.from({ length }, (_, k) => (p[k] || zero).add(q[k] || zero)));
+  }
+
+  function polySub(p, q) {
+    return polyAdd(p, q.map((c) => c.neg()));
+  }
+
+  function polyMul(p, q) {
+    const out = Array.from({ length: p.length + q.length - 1 }, () => p[0].zero());
+    p.forEach((a, i) => q.forEach((b, j) => { out[i + j] = out[i + j].add(a.mul(b)); }));
+    return trimPoly(out);
+  }
+
+  // Long division: p = quotient × q + remainder.
+  function polyDivmod(p, q) {
+    q = trimPoly(q);
+    const r = trimPoly(p).slice();
+    const zero = p[0].zero();
+    const dq = q.length - 1;
+    if (r.length - 1 < dq) return { quotient: [zero], remainder: r };
+    const quotient = Array.from({ length: r.length - dq }, () => zero);
+    for (let k = r.length - 1; k >= dq; k--) {
+      const c = r[k].div(q[dq]);
+      quotient[k - dq] = c;
+      for (let j = 0; j <= dq; j++) r[k - dq + j] = r[k - dq + j].sub(c.mul(q[j]));
+    }
+    return {
+      quotient: trimPoly(quotient),
+      remainder: dq === 0 ? [zero] : trimPoly(r.slice(0, dq)),
+    };
+  }
+
+  const divides = (p, q) => isZeroPoly(polyDivmod(p, q).remainder);
+
+  function monic(p) {
+    p = trimPoly(p);
+    const lead = p[p.length - 1];
+    return p.map((c) => c.div(lead));
+  }
+
+  function polyEval(p, x) {
+    let value = x.zero();
+    for (let k = p.length - 1; k >= 0; k--) value = value.mul(x).add(p[k]);
+    return value;
+  }
+
+  function polyDerivative(p) {
+    if (p.length === 1) return [p[0].zero()];
+    return p.slice(1).map((c, k) => c.mul(c.fromInt(k + 1)));
+  }
+
+  function polyGcd(p, q) {
+    while (!isZeroPoly(q)) [p, q] = [q, polyDivmod(p, q).remainder];
+    return monic(p);
+  }
+
+  // The same roots as p, but each one only once.
+  function squarefree(p) {
+    return monic(polyDivmod(p, polyGcd(p, polyDerivative(p))).quotient);
+  }
+
+  // Divide q out of p as many times as it goes: [what's left, how many times].
+  function divideOut(p, q) {
+    let times = 0;
+    while (degree(p) >= degree(q) && divides(p, q)) {
+      p = polyDivmod(p, q).quotient;
+      times++;
+    }
+    return [p, times];
+  }
+
+  // det of a matrix whose entries are polynomials, by cofactor expansion.
+  // No division is needed, so this works for fractions and for mod p.
+  function polyDet(M) {
+    if (M.length === 1) return trimPoly(M[0][0]);
+    let total = [M[0][0][0].zero()];
+    M[0].forEach((entry, j) => {
+      if (isZeroPoly(entry)) return;
+      const minor = M.slice(1).map((row) => row.filter((_, k) => k !== j));
+      const term = polyMul(entry, polyDet(minor));
+      total = j % 2 ? polySub(total, term) : polyAdd(total, term);
+    });
+    return total;
+  }
+
+  // The characteristic polynomial p(λ) = det(A - λI).
+  function charPoly(A) {
+    const minusOne = A[0][0].one().neg();
+    return polyDet(A.map((row, i) => row.map((x, j) => (i === j ? [x, minusOne] : [x]))));
+  }
+
+  // -------------------------------------------------------------------------
+  // Finding eigenvalues
+  // -------------------------------------------------------------------------
+  // Floats are only used to *guess* roots; every guess is checked exactly.
+
+  const cx = {
+    add: (x, y) => [x[0] + y[0], x[1] + y[1]],
+    sub: (x, y) => [x[0] - y[0], x[1] - y[1]],
+    mul: (x, y) => [x[0] * y[0] - x[1] * y[1], x[0] * y[1] + x[1] * y[0]],
+    div: (x, y) => {
+      const s = y[0] * y[0] + y[1] * y[1];
+      return [(x[0] * y[0] + x[1] * y[1]) / s, (x[1] * y[0] - x[0] * y[1]) / s];
+    },
+    abs: (x) => Math.hypot(x[0], x[1]),
+  };
+
+  const isRealish = (z) => Math.abs(z[1]) <= 1e-7 * (1 + Math.abs(z[0]));
+
+  // Every complex root of a fraction polynomial with no repeated roots
+  // (the Durand–Kerner method), as [real, imaginary] pairs.
+  function approximateRoots(p) {
+    const n = p.length - 1;
+    if (n < 1) return [];
+    const c = p.map((x) => x.toNumber() / p[n].toNumber());
+    const at = (z) => {
+      let value = [0, 0];
+      for (let k = n; k >= 0; k--) value = cx.add(cx.mul(value, z), [c[k], 0]);
+      return value;
+    };
+    const radius = 1 + Math.max(...c.slice(0, n).map(Math.abs));
+    let z = Array.from({ length: n }, (_, k) => {
+      const angle = (2 * Math.PI * k) / n + 0.4;
+      return [radius * Math.cos(angle), radius * Math.sin(angle)];
+    });
+    for (let round = 0; round < 2000; round++) {
+      let change = 0;
+      z = z.map((zk, k) => {
+        let denominator = [1, 0];
+        z.forEach((zj, j) => {
+          if (j !== k) denominator = cx.mul(denominator, cx.sub(zk, zj));
+        });
+        const step = cx.div(at(zk), denominator);
+        change = Math.max(change, cx.abs(step));
+        return cx.sub(zk, step);
+      });
+      if (change <= 1e-14 * radius) break;
+    }
+    return z;
+  }
+
+  // The simplest fraction extremely close to x (continued fractions), or null.
+  function nearbyFraction(x) {
+    if (!Number.isFinite(x)) return null;
+    let [h0, h1, k0, k1] = [0n, 1n, 1n, 0n];
+    let y = x;
+    for (let i = 0; i < 60; i++) {
+      const a = Math.floor(y);
+      [h0, h1] = [h1, BigInt(a) * h1 + h0];
+      [k0, k1] = [k1, BigInt(a) * k1 + k0];
+      const f = new Frac(h1, k1);
+      if (Math.abs(f.toNumber() - x) <= 1e-8 * (1 + Math.abs(x))) return f;
+      if (y === a) return null;
+      y = 1 / (y - a);
+    }
+    return null;
+  }
+
+  // Write m = k² × d with d as small as possible.
+  function splitSquare(m) {
+    const sign = m < 0n ? -1n : 1n;
+    let x = m < 0n ? -m : m;
+    let k = 1n;
+    for (let p = 2n; p * p <= x && p < 1000000n; p++) {
+      while (x % (p * p) === 0n) {
+        x /= p * p;
+        k *= p;
+      }
+    }
+    return { k, d: sign * x };
+  }
+
+  // Roots of λ² - sλ + q by the quadratic formula: s/2 ± (k / 2D)·√d,
+  // where the discriminant s² - 4q = N/D and N·D = k²·d.
+  function quadraticFactor(s, q, mult) {
+    const disc = s.mul(s).sub(q.mul(new Frac(4n)));
+    const { k, d } = splitSquare(disc.n * disc.d);
+    const half = s.div(new Frac(2n));
+    const c = new Frac(k, 2n * disc.d);
+    return {
+      kind: "quadratic", s, q, disc, d, mult, poly: [q, s.neg(), ONE],
+      roots: [new QSqrt(half, c, d), new QSqrt(half, c.neg(), d)],
+    };
+  }
+
+  // Split p(λ) (fraction coefficients) into
+  //   { kind: "linear", root, mult }        fraction eigenvalues
+  //   { kind: "quadratic", roots, ... }     pairs like 1 ± √2 or 2 ± 3i
+  //   { kind: "other", poly, approx, ... }  roots we can only give as decimals
+  function factorOverQ(f) {
+    const factors = [];
+    let g = f;
+
+    // 1. Fraction roots: guess with floats, then check exactly.
+    const roots = [];
+    for (const z of approximateRoots(squarefree(g))) {
+      if (!isRealish(z)) continue;
+      const r = nearbyFraction(z[0]);
+      if (r && !roots.some((s) => s.equals(r)) && polyEval(g, r).isZero()) roots.push(r);
+    }
+    roots.sort((x, y) => x.sub(y).toNumber());
+    for (const r of roots) {
+      let mult;
+      [g, mult] = divideOut(g, [r.neg(), ONE]);
+      factors.push({ kind: "linear", root: r, mult });
+    }
+    if (degree(g) < 1) return factors;
+
+    // 2. Quadratic factors λ² - sλ + q: try pairing up the remaining roots.
+    let rest = squarefree(g);
+    const z = approximateRoots(rest);
+    const used = new Set();
+    for (let i = 0; i < z.length; i++) {
+      for (let j = i + 1; j < z.length; j++) {
+        if (used.has(i) || used.has(j)) continue;
+        const sum = cx.add(z[i], z[j]);
+        const product = cx.mul(z[i], z[j]);
+        if (!isRealish(sum) || !isRealish(product)) continue;
+        const s = nearbyFraction(sum[0]);
+        const q = nearbyFraction(product[0]);
+        if (!s || !q) continue;
+        const quad = [q, s.neg(), ONE];
+        if (!divides(rest, quad)) continue;
+        used.add(i);
+        used.add(j);
+        rest = polyDivmod(rest, quad).quotient;
+        let mult;
+        [g, mult] = divideOut(g, quad);
+        const factor = quadraticFactor(s, q, mult);
+        if (factor.d !== 1n) factors.push(factor);
+        // (a perfect-square discriminant means two fraction roots after all)
+        else for (const r of factor.roots) factors.push({ kind: "linear", root: r.a.add(r.b), mult });
+      }
+    }
+
+    // 3. Whatever is left can't be written with fractions and square roots.
+    if (degree(rest) >= 1) {
+      const [, mult] = divideOut(g, rest);
+      factors.push({ kind: "other", poly: rest, mult, approx: z.filter((_, k) => !used.has(k)) });
+    }
+    return factors;
+  }
+
+  // In ℤ_p the eigenvalues are just the λ in 0..p-1 with p(λ) = 0.
+  const MAX_EIGEN_SEARCH = 100000n;
+
+  function factorModP(f, p) {
+    if (p > MAX_EIGEN_SEARCH) return { factors: [], rest: null, tooBig: true };
+    const factors = [];
+    let g = f;
+    const small = Number(p);
+    for (let v = 0; v < small && degree(g) >= 1; v++) {
+      // Quick check with ordinary numbers (safe, since p ≤ 100,000), then exactly.
+      const coefficients = g.map((c) => Number(c.v));
+      let value = 0;
+      for (let k = coefficients.length - 1; k >= 0; k--) {
+        value = (value * v + coefficients[k]) % small;
+      }
+      if (value !== 0) continue;
+      const r = new ModP(BigInt(v), p);
+      let mult;
+      [g, mult] = divideOut(g, [r.neg(), r.one()]);
+      factors.push({ kind: "linear", root: r, mult });
+    }
+    return { factors, rest: degree(g) >= 1 ? monic(g) : null, tooBig: false };
+  }
+
+  // Characteristic polynomial, its factors, and an eigenspace for every
+  // eigenvalue we can write exactly.
+  function eigenAnalysis(A, modulus) {
+    const poly = charPoly(A);
+    const found = modulus === null
+      ? { factors: factorOverQ(poly), rest: null, tooBig: false }
+      : factorModP(poly, modulus);
+    const values = [];
+    for (const f of found.factors) {
+      if (f.kind === "linear") values.push(eigenspace(A, f.root, f.mult, false));
+      if (f.kind === "quadratic") {
+        const Ad = A.map((row) => row.map((x) => new QSqrt(x, ZERO, f.d)));
+        for (const r of f.roots) values.push(eigenspace(Ad, r, f.mult, f.d < 0n));
+      }
+    }
+    return { poly, ...found, values };
+  }
+
+  // The eigenspace for λ is the kernel of A - λI.
+  function eigenspace(A, lambda, mult, complex) {
+    const M = A.map((row, i) => row.map((x, j) => (i === j ? x.sub(lambda) : x)));
+    const space = solveHomogeneous(M);
+    return { lambda, mult, complex, M, space, geo: space.basis.length };
   }
 
   // -------------------------------------------------------------------------
@@ -435,7 +825,10 @@
       ["Is it Invertible?", invertibleSection(a)],
     ];
     if (a.m === a.n) sections.push(["Determinant and Inverse", squareExtras(a)]);
-    sections.push(["The Rank–Nullity Theorem", rankNullity(a)]);
+    sections.push(
+      ["The Rank–Nullity Theorem", rankNullity(a)],
+      ["Eigenvalues", eigenvaluesSection(a)],
+      ["Eigenvectors", eigenvectorsSection(a)]);
     return sections;
   }
 
@@ -803,7 +1196,250 @@
     ];
   }
 
-  const api = { Frac, ModP, parseEntry, parseGrid, parseModulus, analyze, explain };
+  // --- Eigenvalues and eigenvectors ---
+
+  function nonSquareEigen(a) {
+    return [md(
+      "Eigenvalues and eigenvectors only make sense for **square** matrices. The equation " +
+      raw`$A\vec{v} = \lambda\vec{v}$ compares $A\vec{v}$, which lives in $${space(a, a.m)}$, ` +
+      raw`with $\lambda\vec{v}$, which lives in $${space(a, a.n)}$. Those are only the same ` +
+      "space when the number of rows equals the number of columns, and $A$ is " +
+      raw`$${a.m} \times ${a.n}$.`)];
+  }
+
+  // A polynomial in λ, highest power first, like "-\lambda^{3} + 2\lambda - 1".
+  function polyTex(p) {
+    const terms = [];
+    for (let k = p.length - 1; k >= 0; k--) {
+      const c = p[k];
+      if (c.isZero()) continue;
+      const size = c.abs();
+      const power = k === 0 ? "" : k === 1 ? "\\lambda" : `\\lambda^{${k}}`;
+      const coefficient = k > 0 && size.isOne() ? "" : size.tex();
+      terms.push([c.isNegative(), coefficient + power]);
+    }
+    if (!terms.length) return "0";
+    return terms
+      .map(([negative, body], i) => (i === 0 ? (negative ? "-" : "") : negative ? " - " : " + ") + body)
+      .join("");
+  }
+
+  function linearTex(root) {
+    if (root.isZero()) return "\\lambda";
+    return root.isNegative() ? `\\lambda + ${root.abs().tex()}` : `\\lambda - ${root.tex()}`;
+  }
+
+  // p(λ) written as a product of its factors.
+  function factoredTex(e) {
+    const lead = trimPoly(e.poly)[degree(e.poly)];
+    let out = lead.isOne() ? "" : lead.neg().isOne() ? "-" : lead.tex();
+    const power = (m) => (m > 1 ? `^{${m}}` : "");
+    const pieces = e.factors.map((f) => {
+      if (f.kind === "linear") {
+        return f.root.isZero() ? "\\lambda" + power(f.mult) : `(${linearTex(f.root)})${power(f.mult)}`;
+      }
+      return `(${polyTex(f.poly)})${power(f.mult)}`;
+    });
+    if (e.rest) pieces.push(`(${polyTex(e.rest)})`);
+    // A lone factor like (λ² + 1) doesn't need its parentheses.
+    if (out === "" && pieces.length === 1 && /^\(.*\)$/.test(pieces[0])) {
+      return pieces[0].slice(1, -1);
+    }
+    return out + pieces.join("");
+  }
+
+  // A float eigenvalue, rounded, like "1.3247" or "-0.6624 + 0.5623i".
+  function decimalTex(z) {
+    const round = (x) => String(Number(x.toFixed(4)));
+    if (isRealish(z)) return round(z[0]);
+    return `${round(z[0])} ${z[1] < 0 ? "-" : "+"} ${round(Math.abs(z[1]))}i`;
+  }
+
+  function eigenvaluesSection(a) {
+    if (a.m !== a.n) return nonSquareEigen(a);
+    const e = a.eigen;
+    const p = a.modulus;
+    const lambdaMatrix = a.A.map((row, i) => row.map((x, j) => {
+      if (i !== j) return x.tex();
+      return x.isZero() ? "-\\lambda" : `${x.tex()} - \\lambda`;
+    }));
+    const blocks = [
+      md(raw`An **eigenvalue** of $A$ is a number $\lambda$ for which some **nonzero** vector ` +
+         raw`$\vec{v}$ satisfies $A\vec{v} = \lambda\vec{v}$. In other words, $A$ doesn't change ` +
+         raw`the direction of $\vec{v}$; it only stretches it by a factor of $\lambda$.`),
+      md(raw`Rewriting $A\vec{v} = \lambda\vec{v}$ as $(A - \lambda I)\vec{v} = \vec{0}$, we need ` +
+         raw`$A - \lambda I$ to send a nonzero vector to $\vec{0}$. That happens exactly when ` +
+         raw`$A - \lambda I$ is **not invertible**, which means $\det(A - \lambda I) = 0$.`),
+      latex(raw`A - \lambda I = ` + matrixTex(lambdaMatrix)),
+      md(raw`Its determinant is a polynomial in $\lambda$ called the **characteristic polynomial**` +
+         (p !== null ? ` (working mod ${p})` : "") + ":"),
+      latex(raw`p(\lambda) = \det(A - \lambda I) = ` + polyTex(e.poly)),
+    ];
+
+    if (e.tooBig) {
+      blocks.push(md(
+        raw`To find its roots in $\mathbb{Z}_{${p}}$ we would have to try every number from ` +
+        `$0$ to $${p - 1n}$, which is too many to check here. Pick a prime under 100,000 to ` +
+        "see the eigenvalues."));
+      return blocks;
+    }
+
+    const factored = factoredTex(e);
+    if (factored === polyTex(e.poly)) {
+      blocks.push(md(raw`The eigenvalues are the roots of $p(\lambda)$.`));
+    } else {
+      blocks.push(
+        md(raw`The eigenvalues are the roots of $p(\lambda)$. Factoring it:`),
+        latex(raw`p(\lambda) = ` + factored));
+    }
+    for (const f of e.factors) {
+      if (f.kind === "quadratic") {
+        const top = (f.s.isZero() ? "" : f.s.tex() + " ") + raw`\pm \sqrt{${f.disc.tex()}}`;
+        blocks.push(
+          md(`The factor $${polyTex(f.poly)}$ has no fraction roots, so we use the ` +
+             "**quadratic formula**:"),
+          latex(raw`\lambda = \frac{${top}}{2} = ` + f.roots[0].tex(true)));
+        if (f.d < 0n) {
+          blocks.push(md(
+            `The number under the square root is negative ($${f.disc.tex()}$), so these two ` +
+            "eigenvalues are **complex**. Complex eigenvalues of a real matrix always come in " +
+            raw`**conjugate pairs** $a \pm bi$.`));
+        }
+      }
+      if (f.kind === "other") {
+        blocks.push(
+          md(`The factor $${polyTex(f.poly)}$ doesn't split into pieces with fraction ` +
+             "coefficients, and its roots can't be written using just fractions and square " +
+             "roots. Here they are as decimals:"),
+          latex(f.approx.map((z) => raw`\lambda \approx ` + decimalTex(z)).join(raw`,\quad `)));
+      }
+    }
+    if (e.rest) {
+      blocks.push(md(
+        `The factor $${polyTex(e.rest)}$ has **no roots** in $\\mathbb{Z}_{${p}}$: plugging in ` +
+        raw`each of $0, 1, \dots, ${p - 1n}$ never gives $0$.`));
+    }
+
+    const others = e.factors.filter((f) => f.kind === "other");
+    if (!e.values.length && !others.length) {
+      blocks.push(md(raw`So $A$ has **no eigenvalues** in $\mathbb{Z}_{${p}}$.`));
+      return blocks;
+    }
+    const complexTag = raw`\text{, complex}`;
+    const rows = e.values.map((v) =>
+      raw`\lambda &= ${v.lambda.tex()} && \text{algebraic multiplicity } ${v.mult}` +
+      (v.complex ? complexTag : ""));
+    for (const f of others) {
+      for (const z of f.approx) {
+        rows.push(raw`\lambda &\approx ${decimalTex(z)} && \text{algebraic multiplicity } ${f.mult}` +
+                  (isRealish(z) ? "" : complexTag));
+      }
+    }
+    const total = e.factors.reduce(
+      (sum, f) => sum + f.mult * (f.kind === "linear" ? 1 : degree(f.poly)), 0);
+    blocks.push(
+      md("So the eigenvalues are:"),
+      latex(raw`\begin{aligned}` + rows.join(raw` \\ `) + raw`\end{aligned}`),
+      md("The **algebraic multiplicity** of an eigenvalue is how many times it shows up as a " +
+         raw`root of $p(\lambda)$. ` +
+         (total === a.n
+           ? `Together they add up to $${a.n}$, the size of the matrix.`
+           : `Together they add up to only $${total}$, less than $${a.n}$, because part of ` +
+             raw`$p(\lambda)$ has no roots in $\mathbb{Z}_{${p}}$.`)));
+    return blocks;
+  }
+
+  function eigenvectorsSection(a) {
+    if (a.m !== a.n) return nonSquareEigen(a);
+    const e = a.eigen;
+    if (e.tooBig) {
+      return [md("We need the eigenvalues first, and for this $n$ there are too many numbers to " +
+                 "check. Pick a prime under 100,000.")];
+    }
+    const others = e.factors.filter((f) => f.kind === "other");
+    if (!e.values.length && !others.length) {
+      return [md(raw`$A$ has no eigenvalues in $\mathbb{Z}_{${a.modulus}}$, so it has no ` +
+                 "eigenvectors there either.")];
+    }
+
+    const blocks = [md(
+      raw`For each eigenvalue $\lambda$, the **eigenvectors** are the nonzero solutions of ` +
+      raw`$(A - \lambda I)\vec{v} = \vec{0}$. Together with $\vec{0}$ they make up the kernel of ` +
+      raw`$A - \lambda I$, called the **eigenspace** $E_\lambda$. We find it exactly like we ` +
+      raw`found $\ker(A)$: row reduce, then read off the free variables.`)];
+    for (const v of e.values) {
+      const pivotSpots = new Set(v.space.pivots.map((col, row) => `${row},${col}`));
+      const one = v.space.free.length === 1;
+      blocks.push(
+        md(`**For $\\lambda = ${v.lambda.tex()}$**${v.complex ? " (complex)" : ""}:`),
+        latex(raw`A - \lambda I = ` + matrixTex(v.M) + raw` \;\xrightarrow{\text{RREF}}\; ` +
+              matrixTex(v.space.R, pivotSpots)),
+        md(`The free ${one ? "variable" : "variables"} ${variablesPhrase(v.space.free)} ` +
+           `${one ? "gives" : "give"} the eigenspace:`),
+        latex(`E_{${v.lambda.tex()}} = ` + spanTex(v.space.basis)),
+        md(`So $\\lambda = ${v.lambda.tex()}$ has **geometric multiplicity** $${v.geo}$ (the ` +
+           "number of independent eigenvectors)" +
+           (v.geo === v.mult
+             ? ", which matches its algebraic multiplicity."
+             : `, but its algebraic multiplicity is $${v.mult}$.`)));
+    }
+    if (others.length) {
+      blocks.push(md(
+        "For the eigenvalues we could only write as decimals, exact eigenvectors would need " +
+        "those exact numbers, so we skip them here. Each one still has at least one " +
+        raw`eigenvector, because $A - \lambda I$ isn't invertible.`));
+    }
+    const verdict = diagonalizableText(a);
+    if (verdict) blocks.push(md(verdict));
+    return blocks;
+  }
+
+  function diagonalizableText(a) {
+    const e = a.eigen;
+    const where = a.modulus !== null ? raw` over $\mathbb{Z}_{${a.modulus}}$` : "";
+    const short = e.values.find((v) => v.geo < v.mult);
+    if (short) {
+      return `❌ $\\lambda = ${short.lambda.tex()}$ has algebraic multiplicity $${short.mult}$ ` +
+        `but only ${plural(short.geo, "independent eigenvector")}, so $A$ can't have ` +
+        `$${a.n}$ independent eigenvectors in total. That means $A$ ` +
+        `**is not diagonalizable**${where}.`;
+    }
+    if (e.rest) {
+      return raw`❌ Part of $p(\lambda)$ has no roots in $\mathbb{Z}_{${a.modulus}}$, so $A$ ` +
+        `doesn't have enough eigenvalues there, and it **is not diagonalizable**${where}.`;
+    }
+    const others = e.factors.filter((f) => f.kind === "other");
+    if (others.some((f) => f.mult > 1)) return null;
+    const complex = e.values.some((v) => v.complex) ||
+      others.some((f) => f.approx.some((z) => !isRealish(z)));
+    const verdict = "✅ Every eigenvalue has as many independent eigenvectors as its algebraic " +
+      `multiplicity, so together they give $${a.n}$ independent eigenvectors. That means $A$ ` +
+      `**is diagonalizable**${where}`;
+    return complex
+      ? verdict + ", but only if we allow **complex** numbers. Using only real numbers, it isn't."
+      : verdict + ".";
+  }
+
+  // A short LaTeX list of the eigenvalues for the summary tile (square matrices only).
+  function eigenSummary(a) {
+    if (a.m !== a.n) return null;
+    const e = a.eigen;
+    if (e.tooBig) return raw`\text{too many to check}`;
+    const times = (m) => (m > 1 ? raw`\,(\times ${m})` : "");
+    const items = [];
+    for (const f of e.factors) {
+      if (f.kind === "linear") items.push(f.root.tex() + times(f.mult));
+      if (f.kind === "quadratic") items.push(f.roots[0].tex(true) + times(f.mult));
+      if (f.kind === "other") {
+        for (const z of f.approx) items.push(raw`\approx ${decimalTex(z)}` + times(f.mult));
+      }
+    }
+    return items.length ? items.join(raw`,\; `) : raw`\text{none in } \mathbb{Z}_{${a.modulus}}`;
+  }
+
+  const api = {
+    Frac, ModP, QSqrt, parseEntry, parseGrid, parseModulus, analyze, explain, eigenSummary,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else window.MatrixMath = api;
 })();
