@@ -265,8 +265,9 @@
 <script>
   const MAX_SIZE = 6;
 
-  // What the user has typed, one string per box. It starts with a sample matrix.
-  let grid = [["1", "2", "0", "3"], ["2", "4", "1", "7"], ["3", "6", "1", "10"]];
+  // What the user has typed, one string per box. It starts with a sample
+  // matrix: invertible, with whole-number eigenvalues 2, 3, and 5.
+  let grid = [["5", "1", "-2"], ["2", "3", "-2"], ["1", "0", "2"]];
 
   const matrixBox = document.getElementById("matrix");
   const errorsBox = document.getElementById("errors");
