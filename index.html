@@ -6,7 +6,8 @@
 <title>Matrix Explainer</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<script src="matrix.js"></script>
+<!-- Change the ?v= tag with every update, so browsers never mix an old matrix.js with a new page. -->
+<script src="matrix.js?v=2026-10-26b"></script>
 <style>
   :root {
     --bg: #f7f7f5;
@@ -221,9 +222,10 @@
 <body>
 <main>
   <h1>Matrix Explainer</h1>
-  <p class="lead">Type in a matrix and see its kernel, image, eigenvalues, and whether it is
-    injective, surjective, and invertible, with every step explained. Entries can be whole numbers,
-    decimals, or fractions like <code>-3/4</code>.</p>
+  <p class="lead">Entries can be whole numbers like <code>7</code>, decimals like <code>0.5</code>,
+    or fractions like <code>-3/4</code>. You can also use <strong>π</strong> (type <code>pi</code>
+    or <code>π</code>) and <strong>e</strong>, and combine them like <code>2pi</code>,
+    <code>pi/2</code>, <code>e^2</code>, or <code>(pi+1)/3</code>. Answers stay exact.</p>
 
   <div class="card">
     <div class="sizes">
@@ -405,6 +407,8 @@
       const mod = a.modulus === null ? "" : String.raw`\pmod{${a.modulus}}`;
       tiles.push(["Determinant", math(a.det.tex() + mod, false), ""]);
     }
+    const diagonalizable = MatrixMath.diagonalizableSummary(a);
+    if (diagonalizable !== null) tiles.push(check("Diagonalizable", diagonalizable));
     const eigenvalues = MatrixMath.eigenSummary(a);
     if (eigenvalues !== null) tiles.push(["Eigenvalues", math(eigenvalues, false), "wide"]);
     summaryBox.innerHTML =

@@ -172,6 +172,277 @@
   }
 
   // -------------------------------------------------------------------------
+  // Exact expressions with π and e, like 2π/(e + 1)
+  // -------------------------------------------------------------------------
+  // A "bivariate polynomial" is an array indexed by the power of e; each entry
+  // is an ordinary polynomial in π (fraction coefficients, constant first).
+  // A PiE number is a fraction num/den of two of these, kept in lowest terms
+  // with the denominator's leading coefficient equal to 1, so every value has
+  // exactly one way of being written.
+
+  const POLY_ZERO = [ZERO];
+  const POLY_ONE = [ONE];
+
+  function trim2(A) {
+    let k = A.length;
+    while (k > 1 && isZeroPoly(A[k - 1])) k--;
+    return A.slice(0, k).map(trimPoly);
+  }
+  const isZero2 = (A) => A.every(isZeroPoly);
+  const deg2 = (A) => trim2(A).length - 1;
+  const lead2 = (A) => trim2(A)[deg2(A)];
+  const leadRational = (A) => { const p = lead2(A); return p[p.length - 1]; };
+  const isOne2 = (A) => deg2(A) === 0 && degree(A[0]) === 0 && A[0][0].isOne();
+
+  function add2(A, B) {
+    const length = Math.max(A.length, B.length);
+    return trim2(Array.from({ length }, (_, k) => polyAdd(A[k] || POLY_ZERO, B[k] || POLY_ZERO)));
+  }
+  const neg2 = (A) => A.map((p) => p.map((c) => c.neg()));
+  const sub2 = (A, B) => add2(A, neg2(B));
+  function mul2(A, B) {
+    const out = Array.from({ length: A.length + B.length - 1 }, () => POLY_ZERO);
+    A.forEach((a, i) => B.forEach((b, j) => { out[i + j] = polyAdd(out[i + j], polyMul(a, b)); }));
+    return trim2(out);
+  }
+  const scale2 = (A, c) => trim2(A.map((p) => polyMul(p, c))); // c is a polynomial in π
+  const shift2 = (A, k) => [...Array.from({ length: k }, () => POLY_ZERO), ...trim2(A)];
+
+  // gcd of the π-polynomial coefficients
+  function content2(A) {
+    // a nonzero constant coefficient means there's no common factor to find
+    if (trim2(A).some((p) => degree(p) === 0 && !p[0].isZero())) return POLY_ONE;
+    return trim2(A).reduce((g, p) => {
+      if (isZeroPoly(p)) return g;
+      return isZeroPoly(g) ? monic(p) : polyGcd(g, p);
+    }, POLY_ZERO);
+  }
+  function primitive2(A) {
+    const c = content2(A);
+    return isZeroPoly(c) ? A : trim2(A.map((p) => polyDivmod(p, c).quotient));
+  }
+  // Pseudo-remainder of A by B, as polynomials in e.
+  function prem2(A, B) {
+    let R = trim2(A);
+    const d = deg2(B);
+    const b = lead2(B);
+    while (!isZero2(R) && deg2(R) >= d) {
+      R = sub2(scale2(R, b), scale2(shift2(B, deg2(R) - d), lead2(R)));
+    }
+    return R;
+  }
+  function normalize2(A) {
+    const lc = leadRational(A);
+    return A.map((p) => p.map((c) => c.div(lc)));
+  }
+  // Greatest common divisor (primitive remainder sequence over ℚ[π]).
+  function gcd2(A, B) {
+    if (isZero2(A)) return normalize2(B);
+    if (isZero2(B)) return normalize2(A);
+    const constant = (X) => deg2(X) === 0 && degree(X[0]) === 0;
+    if (constant(A) || constant(B)) return [POLY_ONE];
+    const c = polyGcd(content2(A), content2(B));
+    let X = primitive2(A);
+    let Y = primitive2(B);
+    if (deg2(X) < deg2(Y)) [X, Y] = [Y, X];
+    while (!isZero2(Y)) {
+      const R = prem2(X, Y);
+      X = Y;
+      Y = isZero2(R) ? R : primitive2(R);
+    }
+    return normalize2(scale2(primitive2(X), c));
+  }
+  // A / B when B divides A exactly.
+  function div2(A, B) {
+    let R = trim2(A);
+    B = trim2(B);
+    const d = deg2(B);
+    const quotient = Array.from({ length: Math.max(1, deg2(R) - d + 1) }, () => POLY_ZERO);
+    while (!isZero2(R) && deg2(R) >= d) {
+      const k = deg2(R) - d;
+      const c = polyDivmod(lead2(R), lead2(B)).quotient;
+      quotient[k] = polyAdd(quotient[k], c);
+      R = sub2(R, scale2(shift2(B, k), c));
+    }
+    return trim2(quotient);
+  }
+  function eval2(A) {
+    return trim2(A).reduce((sum, p, j) =>
+      sum + p.reduce((s, c, i) => s + c.toNumber() * Math.PI ** i, 0) * Math.E ** j, 0);
+  }
+  // Nonzero terms {i, j, c} of c·π^i·e^j, biggest total power first.
+  function terms2(A) {
+    const out = [];
+    trim2(A).forEach((p, j) => p.forEach((c, i) => { if (!c.isZero()) out.push({ i, j, c }); }));
+    return out.sort((x, y) => (y.i + y.j) - (x.i + x.j) || y.i - x.i);
+  }
+  function tex2(A) {
+    const pieces = terms2(A).map(({ i, j, c }, k) => {
+      const monomial = (i ? (i === 1 ? "\\pi" : `\\pi^{${i}}`) : "") +
+                       (j ? (i ? " " : "") + (j === 1 ? "e" : `e^{${j}}`) : "");
+      const size = c.abs();
+      const coefficient = monomial && size.isOne() ? "" : size.tex();
+      const sign = c.isNegative() ? (k === 0 ? "-" : " - ") : k === 0 ? "" : " + ";
+      return sign + coefficient + monomial;
+    });
+    return pieces.length ? pieces.join("") : "0";
+  }
+
+  class PiE {
+    // Build num/den in lowest terms.
+    constructor(num, den = [POLY_ONE]) {
+      num = trim2(num);
+      den = trim2(den);
+      if (isZero2(den)) throw new Error("division by zero");
+      if (isZero2(num)) {
+        this.num = [POLY_ZERO];
+        this.den = [POLY_ONE];
+        return;
+      }
+      if (!isOne2(den)) {
+        const g = gcd2(num, den);
+        if (!isOne2(g)) {
+          num = div2(num, g);
+          den = div2(den, g);
+        }
+      }
+      const lc = leadRational(den);
+      this.num = num.map((p) => p.map((c) => c.div(lc)));
+      this.den = den.map((p) => p.map((c) => c.div(lc)));
+    }
+    static fromFrac(f) { return new PiE([[f]]); }
+    // Skip lowest-terms work when the denominators are both 1.
+    static polynomial(num) { const x = Object.create(PiE.prototype); x.num = trim2(num); x.den = [POLY_ONE]; return x; }
+    get simple() { return isOne2(this.den); }
+    add(o) {
+      if (this.simple && o.simple) return PiE.polynomial(add2(this.num, o.num));
+      return new PiE(add2(mul2(this.num, o.den), mul2(o.num, this.den)), mul2(this.den, o.den));
+    }
+    sub(o) { return this.add(o.neg()); }
+    mul(o) {
+      if (this.simple && o.simple) return PiE.polynomial(mul2(this.num, o.num));
+      return new PiE(mul2(this.num, o.num), mul2(this.den, o.den));
+    }
+    inverse() {
+      if (this.isZero()) throw new Error("division by zero");
+      return new PiE(this.den, this.num);
+    }
+    div(o) { return this.mul(o.inverse()); }
+    neg() { const x = Object.create(PiE.prototype); x.num = neg2(this.num); x.den = this.den; return x; }
+    abs() { return this.isNegative() ? this.neg() : this; }
+    zero() { return PiE.fromFrac(ZERO); }
+    one() { return PiE.fromFrac(ONE); }
+    fromInt(k) { return PiE.fromFrac(new Frac(BigInt(k))); }
+    isZero() { return isZero2(this.num); }
+    isOne() { return this.simple && isOne2(this.num); }
+    isInteger() { return this.simple; } // "divide by it" reads naturally
+    isConstant() { return this.simple && deg2(this.num) === 0 && degree(this.num[0]) === 0; }
+    toFrac() { return this.num[0][0]; }
+    isNegative() { const first = terms2(this.num)[0]; return Boolean(first && first.c.isNegative()); }
+    equals(o) { return this.toString() === o.toString(); }
+    toNumber() { return eval2(this.num) / eval2(this.den); }
+    toString() { return this.simple ? tex2(this.num) : `(${tex2(this.num)})/(${tex2(this.den)})`; }
+    tex() {
+      if (this.isZero()) return "0";
+      // Clear fraction coefficients first: (π + 1)/3 reads better than ⅓π + ⅓.
+      const lcm = (a, b) => (a / gcd(a, b)) * b;
+      let scale = 1n;
+      for (const A of [this.num, this.den]) for (const p of A) for (const c of p) scale = lcm(scale, c.d);
+      // also make the denominator's first term positive
+      const flip = terms2(this.den)[0].c.isNegative();
+      const factor = [[new Frac(flip ? -scale : scale)]];
+      const num = mul2(this.num, factor);
+      const den = mul2(this.den, factor);
+      // No denominator: write the terms with their own signs (-π²e + π²).
+      if (isOne2(den)) return tex2(num);
+      const negative = terms2(num)[0].c.isNegative();
+      const top = tex2(negative ? neg2(num) : num);
+      return `${negative ? "-" : ""}\\frac{${top}}{${tex2(den)}}`;
+    }
+  }
+
+  // (made on demand, because the polynomial helpers are defined further down)
+  const PI = () => PiE.polynomial([[ZERO, ONE]]);
+  const E = () => PiE.polynomial([POLY_ZERO, POLY_ONE]);
+
+  // Read an expression like 2pi, π/2, e^2, (pi+1)/3, 3(e - 1).
+  function parseExpression(source, original) {
+    const bad = () => new Error("I couldn't read `" + original + "` as a number");
+    const tokens = [];
+    for (let i = 0; i < source.length;) {
+      const rest = source.slice(i);
+      const number = /^(\d+(\.\d*)?|\.\d+)/.exec(rest);
+      if (number) {
+        tokens.push({ kind: "num", value: PiE.fromFrac(decimalToFrac(number[0])) });
+        i += number[0].length;
+      } else if (rest.startsWith("pi")) { tokens.push({ kind: "pi" }); i += 2; }
+      else if (rest[0] === "π") { tokens.push({ kind: "pi" }); i += 1; }
+      else if (rest[0] === "e") { tokens.push({ kind: "e" }); i += 1; }
+      else if ("+-*/^()".includes(rest[0])) { tokens.push({ kind: rest[0] }); i += 1; }
+      else if ("×·".includes(rest[0])) { tokens.push({ kind: "*" }); i += 1; }
+      else throw bad();
+    }
+    let at = 0;
+    const peek = () => tokens[at] && tokens[at].kind;
+    const divide = (x, y) => {
+      if (y.isZero()) throw new Error("`" + original + "` divides by zero");
+      return x.div(y);
+    };
+    function expression() {
+      let value = term();
+      while (peek() === "+" || peek() === "-") {
+        const op = tokens[at++].kind;
+        value = op === "+" ? value.add(term()) : value.sub(term());
+      }
+      return value;
+    }
+    function term() {
+      let value = unary();
+      for (;;) {
+        const next = peek();
+        if (next === "*") { at++; value = value.mul(unary()); }
+        else if (next === "/") { at++; value = divide(value, unary()); }
+        // 2π, πe, 3(e - 1): multiplying without a sign
+        else if (next === "pi" || next === "e" || next === "(") value = value.mul(power());
+        else return value;
+      }
+    }
+    function unary() {
+      if (peek() === "-") { at++; return unary().neg(); }
+      if (peek() === "+") { at++; return unary(); }
+      return power();
+    }
+    function power() {
+      const base = atom();
+      if (peek() !== "^") return base;
+      at++;
+      const exponent = unary();
+      if (!exponent.isConstant() || !exponent.toFrac().isInteger()) throw bad();
+      const k = Number(exponent.toFrac().n);
+      if (Math.abs(k) > 20) throw bad();
+      let value = base.one();
+      for (let n = 0; n < Math.abs(k); n++) value = value.mul(base);
+      return k < 0 ? divide(base.one(), value) : value;
+    }
+    function atom() {
+      const token = tokens[at++];
+      if (!token) throw bad();
+      if (token.kind === "num") return token.value;
+      if (token.kind === "pi") return PI();
+      if (token.kind === "e") return E();
+      if (token.kind === "(") {
+        const value = expression();
+        if (tokens[at++]?.kind !== ")") throw bad();
+        return value;
+      }
+      throw bad();
+    }
+    const value = expression();
+    if (at !== tokens.length) throw bad();
+    return value;
+  }
+
+  // -------------------------------------------------------------------------
   // Reading what the user typed
   // -------------------------------------------------------------------------
 
@@ -191,13 +462,22 @@
   function parseEntry(text, modulus = null) {
     const cleaned = String(text).trim().replace(/−/g, "-").replace(/ /g, "");
     if (cleaned === "") throw new Error("this box is empty");
+    let value;
     const match = ENTRY.exec(cleaned);
-    if (!match) throw new Error("I couldn't read `" + text + "` as a number");
-    const top = decimalToFrac(match[1]);
-    const bottom = match[2] ? decimalToFrac(match[2]) : ONE;
-    if (bottom.isZero()) throw new Error("`" + text + "` divides by zero");
-    const value = top.div(bottom);
+    if (match) {
+      const top = decimalToFrac(match[1]);
+      const bottom = match[2] ? decimalToFrac(match[2]) : ONE;
+      if (bottom.isZero()) throw new Error("`" + text + "` divides by zero");
+      value = top.div(bottom);
+    } else {
+      // Anything fancier (π, e, parentheses, powers) goes through the expression reader.
+      const expression = parseExpression(cleaned.toLowerCase(), text);
+      value = expression.isConstant() ? expression.toFrac() : expression;
+    }
     if (modulus === null) return value;
+    if (value instanceof PiE) {
+      throw new Error("`" + text + "` uses π or e, which don't make sense mod " + modulus);
+    }
     const reduced = fracToModP(value, modulus);
     if (!reduced) {
       throw new Error("`" + text + "` can't be used mod " + modulus +
@@ -220,7 +500,12 @@
         }
       })
     );
-    return errors.length ? { matrix: null, errors } : { matrix, errors };
+    if (errors.length) return { matrix: null, errors };
+    // If any entry uses π or e, every entry becomes that kind of number.
+    if (matrix.flat().some((x) => x instanceof PiE)) {
+      return { matrix: matrix.map((row) => row.map((x) => (x instanceof PiE ? x : PiE.fromFrac(x)))), errors };
+    }
+    return { matrix, errors };
   }
 
   const MAX_MODULUS = 1000000000;
@@ -337,7 +622,28 @@
     const augmented = A.map((row, i) =>
       row.concat(Array.from({ length: n }, (_, j) => (i === j ? one : zero)))
     );
+    if (A.flat().every((x) => x instanceof PiE && x.simple)) return fractionFreeInverse(augmented, n);
     return rref(augmented).R.map((row) => row.slice(n));
+  }
+
+  // Gauss–Jordan without fractions (Bareiss's trick), for entries that are
+  // polynomials in π and e: every division is exact, so nothing ever needs
+  // reducing to lowest terms until the very end. The left half ends up as
+  // det·I, so dividing the right half by det gives the inverse.
+  function fractionFreeInverse(M, n) {
+    let rows = M.map((row) => row.map((x) => x.num));
+    let previous = [POLY_ONE];
+    for (let k = 0; k < n; k++) {
+      let p = k;
+      while (p < n && isZero2(rows[p][k])) p++;
+      [rows[k], rows[p]] = [rows[p], rows[k]];
+      const pivotRow = rows[k];
+      const pivot = pivotRow[k];
+      rows = rows.map((row, i) => (i === k ? row : row.map((x, j) =>
+        div2(sub2(mul2(pivot, x), mul2(row[k], pivotRow[j])), previous))));
+      previous = pivot;
+    }
+    return rows.map((row, i) => row.slice(n).map((x) => new PiE(x, row[i])));
   }
 
   function column(A, j) {
@@ -463,8 +769,49 @@
   }
 
   function polyGcd(p, q) {
+    if (p[0] instanceof Frac) return polyGcdQ(p, q);
     while (!isZeroPoly(q)) [p, q] = [q, polyDivmod(p, q).remainder];
     return monic(p);
+  }
+
+  // gcd for fraction polynomials. Plain long division makes the fractions
+  // explode, so clear denominators and keep whole-number coefficients small
+  // by dividing out their common factor at every step.
+  function polyGcdQ(p, q) {
+    p = trimPoly(p);
+    q = trimPoly(q);
+    if (isZeroPoly(q)) return isZeroPoly(p) ? p : monic(p);
+    if (isZeroPoly(p)) return monic(q);
+    if (degree(p) === 0 || degree(q) === 0) return [ONE];
+    const lcm = (a, b) => (a / gcd(a, b)) * b;
+    const primitive = (coeffs) => {
+      const g = coeffs.reduce((acc, c) => gcd(acc, c), 0n) || 1n;
+      return coeffs.map((c) => c / g);
+    };
+    const toIntegers = (poly) => {
+      const scale = poly.reduce((acc, c) => lcm(acc, c.d), 1n);
+      return primitive(poly.map((c) => (c.n * scale) / c.d));
+    };
+    const trimInts = (r) => { let k = r.length; while (k > 1 && r[k - 1] === 0n) k--; return r.slice(0, k); };
+    const isZeroInts = (r) => r.length === 1 && r[0] === 0n;
+    let a = toIntegers(p);
+    let b = toIntegers(q);
+    if (a.length < b.length) [a, b] = [b, a];
+    while (!isZeroInts(b)) {
+      // pseudo-remainder of a by b, in whole numbers
+      let r = a.slice();
+      const lb = b[b.length - 1];
+      while (!isZeroInts(r) && r.length >= b.length) {
+        const lr = r[r.length - 1];
+        const shift = r.length - b.length;
+        r = r.map((c, i) => c * lb - (i >= shift ? lr * b[i - shift] : 0n));
+        r = trimInts(r.length > 1 ? r.slice(0, -1) : [0n]); // the top term is now 0
+      }
+      a = b;
+      b = isZeroInts(r) ? r : primitive(r);
+    }
+    if (a.length === 1) return [ONE];
+    return monic(a.map((c) => new Frac(c)));
   }
 
   // The same roots as p, but each one only once.
@@ -678,13 +1025,127 @@
     return { factors, rest: degree(g) >= 1 ? monic(g) : null, tooBig: false };
   }
 
+  // Split a polynomial f = s₁ · s₂² · s₃³ ··· into pieces sₖ whose roots all
+  // have multiplicity exactly k (Yun's algorithm). Returns [[s₁, 1], [s₂, 2], ...].
+  function multiplicityLayers(f) {
+    const layers = [];
+    const derivative = polyDerivative(f);
+    const a = polyGcd(f, derivative);
+    let b = polyDivmod(f, a).quotient;
+    let c = polyDivmod(derivative, a).quotient;
+    let d = polySub(c, polyDerivative(b));
+    for (let k = 1; degree(b) >= 1; k++) {
+      const s = isZeroPoly(d) ? monic(b) : polyGcd(b, d);
+      if (degree(s) >= 1) layers.push([s, k]);
+      b = polyDivmod(b, s).quotient;
+      c = polyDivmod(d, s).quotient;
+      d = polySub(c, polyDerivative(b));
+    }
+    return layers;
+  }
+
+  // With π and e in the matrix: eigenvalues that are an entry of A (like π on
+  // a diagonal) or a plain fraction are found exactly; the rest as decimals.
+  function factorSymbolic(f, A) {
+    const factors = [];
+    let g = f;
+    const tried = [];
+    const consider = (c) => {
+      if (degree(g) < 1 || tried.some((t) => t.equals(c))) return;
+      tried.push(c);
+      if (!polyEval(g, c).isZero()) return;
+      let mult;
+      [g, mult] = divideOut(g, [c.neg(), c.one()]);
+      factors.push({ kind: "linear", root: c, mult });
+    };
+    // Guesses: each entry x, and ±x, x ± y, (x ± y)/2 for entries x, y. Only the
+    // guesses that are numerically close to a root get checked exactly. (Exact
+    // gcds with π and e are very slow, so the decimal roots come straight from g.)
+    const roots = approximateRoots(g).filter(isRealish).map((z) => z[0]);
+    const close = (c) => roots.some((r) => Math.abs(c.toNumber() - r) <= 1e-4 * (1 + Math.abs(r)));
+    const entries = [];
+    for (const x of A.flat()) if (!entries.some((y) => y.equals(x))) entries.push(x);
+    const two = A[0][0].fromInt(2);
+    const guesses = [];
+    for (const x of entries) {
+      guesses.push(x, x.neg());
+      for (const y of entries) guesses.push(x.add(y), x.sub(y), x.add(y).div(two), x.sub(y).div(two));
+    }
+    for (const r of roots) {
+      const f = nearbyFraction(r);
+      if (f) guesses.push(PiE.fromFrac(f));
+    }
+    guesses.filter(close).forEach(consider);
+    const rest = [];
+    const addPiece = (piece, mult) => {
+      if (degree(piece) === 1) factors.push({ kind: "linear", root: piece[0].neg(), mult });
+      else if (degree(piece) === 2) rest.push(symbolicQuadratic(piece, mult));
+      else rest.push({ kind: "other", poly: piece, mult, approx: approximateRoots(piece) });
+    };
+    if (degree(g) >= 1) {
+      g = monic(g);
+      const z = approximateRoots(g);
+      const spread = Math.max(1, ...z.map(cx.abs));
+      const repeated = z.some((a, i) => z.some((b, j) => j > i && cx.abs(cx.sub(a, b)) < 1e-4 * spread));
+      if (degree(g) === 2) {
+        const [c, b] = g;
+        const disc = b.mul(b).sub(c.mul(c.fromInt(4)));
+        if (disc.isZero()) factors.push({ kind: "linear", root: b.neg().div(b.fromInt(2)), mult: 2 });
+        else addPiece(g, 1);
+      } else if (!repeated) {
+        addPiece(g, 1); // no repeated roots: g is already "squarefree"
+      } else {
+        // Rare: some root repeats. Sort out the multiplicities exactly (slow).
+        for (const [piece, mult] of multiplicityLayers(g)) addPiece(piece, mult);
+      }
+    }
+    factors.sort((x, y) => x.root.toNumber() - y.root.toNumber());
+    return [...factors, ...rest];
+  }
+
+  // λ² + bλ + c with π and e in it: the quadratic formula still gives exact
+  // roots (s ± √disc)/2, even though we can't row reduce with them exactly.
+  function symbolicQuadratic(piece, mult) {
+    const [c, b] = piece;
+    const s = b.neg();
+    const disc = b.mul(b).sub(c.mul(c.fromInt(4)));
+    const top = (sign) => (s.isZero() ? (sign === "+" ? "" : "-") : `${s.tex()} ${sign} `) +
+      `\\sqrt{${disc.tex()}}`;
+    const half = (x) => `\\frac{${x}}{2}`;
+    const sN = s.toNumber();
+    const dN = disc.toNumber();
+    const root = Math.sqrt(Math.abs(dN)) / 2;
+    const approx = dN >= 0 ? [[sN / 2 + root, 0], [sN / 2 - root, 0]] : [[sN / 2, root], [sN / 2, -root]];
+    const factor = { kind: "other", poly: piece, mult, approx, s, disc };
+    if (disc.isConstant()) {
+      // No π or e under the root: simplify, so (2π ± √8)/2 becomes π ± √2.
+      const D = disc.toFrac();
+      const { k, d } = splitSquare(D.n * D.d);
+      const halfS = s.div(s.fromInt(2));
+      const r = new QSqrt(ZERO, new Frac(k, 2n * D.d), d).tex();
+      const start = halfS.isZero() ? "" : coefficientTex(halfS) + " ";
+      return { ...factor, exact: [`${start}+ ${r}`.replace(/^\+ /, ""), `${start}- ${r}`.replace(/^- /, "-")],
+               pmTex: `${start}\\pm ${r}` };
+    }
+    return {
+      ...factor,
+      exact: [half(top("+")), half(top("-"))],
+      pmTex: half(s.isZero() ? `\\pm\\sqrt{${disc.tex()}}` : `${s.tex()} \\pm \\sqrt{${disc.tex()}}`),
+    };
+  }
+
+  // Pick the right way to factor, depending on the kind of numbers.
+  function factorAll(f, modulus, A) {
+    if (modulus !== null) return factorModP(f, modulus);
+    if (A[0][0] instanceof PiE) return { factors: factorSymbolic(f, A), rest: null, tooBig: false };
+    return { factors: factorOverQ(f), rest: null, tooBig: false };
+  }
+
   // Characteristic polynomial, its factors, and an eigenspace for every
   // eigenvalue we can write exactly.
   function eigenAnalysis(A, modulus) {
     const poly = charPoly(A);
-    const found = modulus === null
-      ? { factors: factorOverQ(poly), rest: null, tooBig: false }
-      : factorModP(poly, modulus);
+    const found = factorAll(poly, modulus, A);
     const values = [];
     for (const f of found.factors) {
       if (f.kind === "linear") values.push(eigenspace(A, f.root, f.mult, false));
@@ -697,11 +1158,12 @@
     const approxValues = [];
     for (const f of found.factors) {
       if (f.kind !== "other") continue;
-      for (const z of f.approx) {
+      f.approx.forEach((z, k) => {
         const space = numericEigenspace(A, z);
         approxValues.push({ z, mult: f.mult, complex: !isRealish(z), space,
+                            exact: f.exact ? f.exact[k] : null,
                             geo: space ? space.basis.length : null });
-      }
+      });
     }
     return { poly, ...found, values, approxValues };
   }
@@ -785,20 +1247,43 @@
   }
 
   // Rank of a list of column vectors.
-  function rankOf(vectors) {
+  function exactRank(vectors) {
     if (!vectors.length) return 0;
     return rref(vectors[0].map((_, i) => vectors.map((v) => v[i]))).pivots.length;
+  }
+
+  const MAX_AXLER_TERMS = 250;
+  const termCount = (x) => terms2(x.num).length + (x.simple ? 0 : terms2(x.den).length);
+
+  // The same, estimated with decimals (fast, for vectors full of π and e).
+  function numericRank(vectors) {
+    if (!vectors.length) return 0;
+    const M = vectors[0].map((_, i) => vectors.map((v) => [v[i].toNumber(), 0]));
+    const scale = Math.max(1, ...M.flat().map(cx.abs));
+    return numericRref(M, 1e-9 * scale).pivots.length;
   }
 
   // Multiply by A until the list v, Av, A²v, ... becomes dependent.
   // Returns the vectors, the matrix K with them as columns and its RREF, and
   // q(z) = zᵏ - Σ rᵢ zⁱ where Aᵏv = Σ rᵢ Aⁱv.
   function firstDependence(A, v) {
+    const symbolic = v[0] instanceof PiE;
     const vectors = [v];
     for (;;) {
       const next = matVec(A, vectors[vectors.length - 1]);
       const k = vectors.length;
       const columns = [...vectors, next];
+      // With π and e, exact row reduction is slow: only do it once the
+      // decimals say the list has become dependent.
+      if (symbolic && numericRank(columns) === columns.length) {
+        vectors.push(next);
+        continue;
+      }
+      // Past a few hundred terms the exact work takes ages, and the answer
+      // would be pages long anyway.
+      if (symbolic && columns.flat().reduce((sum, x) => sum + termCount(x), 0) > MAX_AXLER_TERMS) {
+        return { tooMessy: true };
+      }
       const K = v.map((_, i) => columns.map((c) => c[i]));
       const { R, pivots } = rref(K);
       if (!pivots.includes(k)) {
@@ -833,6 +1318,7 @@
     const runs = [];
     const found = new Map(); // factor key -> factor
     const generated = []; // every independent v, Av, A²v, ... so far
+    const rankOf = zero instanceof PiE ? numericRank : exactRank;
     for (let j = 0; j < n && rankOf(generated) < n; j++) {
       const e = Array.from({ length: n }, (_, i) => (i === j ? one : zero));
       if (rankOf([...generated, e]) === rankOf(generated)) {
@@ -840,9 +1326,8 @@
         continue;
       }
       const run = firstDependence(A, e);
-      const factored = modulus === null
-        ? { factors: factorOverQ(run.q), rest: null }
-        : factorModP(run.q, modulus);
+      if (run.tooMessy) return { tooMessy: true };
+      const factored = factorAll(run.q, modulus, A);
       const fresh = factored.factors.filter((f) => !found.has(factorKey(f)));
       for (const f of fresh) found.set(factorKey(f), f);
       generated.push(...run.vectors.slice(0, -1));
@@ -893,7 +1378,9 @@
         })
         .join(" & ")
     );
-    return "\\begin{bmatrix}" + rows.join(" \\\\ ") + "\\end{bmatrix}";
+    const body = "\\begin{bmatrix}" + rows.join(" \\\\ ") + "\\end{bmatrix}";
+    // fractions get cramped inside matrices, so give the rows more room
+    return rows.some((r) => r.includes("\\frac")) ? `{\\def\\arraystretch{1.6}${body}}` : body;
   }
 
   function vectorTex(v) {
@@ -909,6 +1396,12 @@
     return String.raw`\operatorname{span}` + setTex(vectors);
   }
 
+  // A number about to multiply something, in parentheses if it's a sum like π + 1.
+  function coefficientTex(c) {
+    const t = c.tex();
+    return /[+-]/.test(t.replace(/^-/, "")) ? `\\left(${t}\\right)` : t;
+  }
+
   // A combination of free variables, like "-2 x_{2} - 3 x_{4}".
   function combinationTex(coefficients, free) {
     const terms = free.filter((f) => coefficients.has(f));
@@ -918,7 +1411,7 @@
         const c = coefficients.get(f);
         const sign = c.isNegative() ? (k === 0 ? "-" : " - ") : k === 0 ? "" : " + ";
         const size = c.abs();
-        return sign + (size.isOne() ? "" : size.tex() + " ") + variable(f);
+        return sign + (size.isOne() ? "" : coefficientTex(size) + " ") + variable(f);
       })
       .join("");
   }
@@ -991,8 +1484,10 @@
     if (a.m === a.n) sections.push(["Determinant and Inverse", squareExtras(a)]);
     sections.push(
       ["The Rank–Nullity Theorem", rankNullity(a)],
+      ["Orthonormalize (Gram–Schmidt)", orthonormalSection(a)],
       ["Eigenvalues", options.axler ? axlerSection(a) : eigenvaluesSection(a)],
-      ["Eigenvectors", eigenvectorsSection(a)]);
+      ["Eigenvectors", eigenvectorsSection(a)],
+      ["Diagonalize", diagonalizeSection(a)]);
     return sections;
   }
 
@@ -1086,7 +1581,7 @@
       ];
     }
     if (step.kind === "scale") {
-      const label = raw`${R(step.row)} \to ${step.factor.tex()}${R(step.row)}`;
+      const label = raw`${R(step.row)} \to ${coefficientTex(step.factor)}${R(step.row)}`;
       if (a.modulus !== null) {
         const product = step.pivot.v * step.factor.v;
         return [label,
@@ -1106,7 +1601,7 @@
     const where = step.target > step.source ? "below" : "above";
     const subtract = !step.factor.isNegative();
     const size = step.factor.abs();
-    const times = size.isOne() ? "" : size.tex();
+    const times = size.isOne() ? "" : coefficientTex(size);
     const sentence =
       (subtract
         ? `Subtract ${size.isOne() ? "" : `$${times}$ times `}row ${step.source + 1} ` +
@@ -1360,6 +1855,278 @@
     ];
   }
 
+  // --- Orthonormalizing the columns (Gram–Schmidt) ---
+
+  function dot(u, v) {
+    return u.reduce((sum, x, i) => sum.add(x.mul(v[i])), u[0].zero());
+  }
+
+  // u_k = a_k minus its projections onto the earlier u's. Columns that turn
+  // into 0 depend on earlier columns and are left out.
+  function gramSchmidt(A) {
+    const us = []; // { k, vec, norm2 }
+    const steps = A[0].map((_, k) => {
+      const a = column(A, k);
+      const projections = us.map((u) => ({ u, top: dot(a, u.vec), coefficient: dot(a, u.vec).div(u.norm2) }));
+      let vec = a;
+      for (const { u, coefficient } of projections) {
+        vec = vec.map((x, i) => x.sub(coefficient.mul(u.vec[i])));
+      }
+      const zero = vec.every((x) => x.isZero());
+      if (!zero) us.push({ k, vec, norm2: dot(vec, vec) });
+      return { k, a, projections, vec, zero };
+    });
+    return { steps, us };
+  }
+
+  // 1/‖u‖ written nicely: for fractions, ‖u‖ = √(n/d) = k√s/d, so each entry of
+  // u/‖u‖ is a fraction times √s. Returns the length and the unit vector as TeX.
+  // √x for a PiE number whose top and bottom are single terms with even powers,
+  // like 2π²/e⁴ (π and e are positive, so √(π²) = π). Returns { factor, s }
+  // meaning √x = factor·√s, or null if x isn't like that.
+  function sqrtMonomial(x) {
+    const half = (A) => {
+      const t = terms2(A);
+      if (t.length !== 1 || t[0].i % 2 || t[0].j % 2 || t[0].c.isNegative()) return null;
+      const out = Array.from({ length: t[0].j / 2 + 1 }, () => POLY_ZERO);
+      out[t[0].j / 2] = Array.from({ length: t[0].i / 2 + 1 }, (_, k) => (k === t[0].i / 2 ? ONE : ZERO));
+      return { root: out, c: t[0].c };
+    };
+    const top = half(x.num);
+    const bottom = half(x.den);
+    if (!top || !bottom) return null;
+    // the number in front: c = n/d, and √(n/d) = k√s/d
+    const c = top.c.div(bottom.c);
+    const { k, d: s } = splitSquare(c.n * c.d);
+    const factor = new PiE(top.root, bottom.root).mul(PiE.fromFrac(new Frac(k, c.d)));
+    return { factor, s };
+  }
+
+  function normalizeTex(u) {
+    const N = u.norm2;
+    const exactRoot = N instanceof PiE && !N.isConstant() ? sqrtMonomial(N) : null;
+    if (exactRoot) {
+      const { factor, s } = exactRoot;
+      const scaled = vectorTex(u.vec.map((x) => x.div(factor)));
+      if (s === 1n) return { length: factor.tex(), unit: scaled };
+      return {
+        length: coefficientTex(factor) + raw`\sqrt{${s}}`,
+        unit: new QSqrt(ZERO, new Frac(1n, s), s).tex() + scaled, // 1/√s = √s/s
+      };
+    }
+    if (N instanceof PiE && !N.isConstant()) {
+      return {
+        length: raw`\sqrt{${N.tex()}}`,
+        unit: raw`\frac{1}{\sqrt{${N.tex()}}}` + vectorTex(u.vec),
+      };
+    }
+    const value = N instanceof PiE ? N.toFrac() : N;
+    const { k, d } = splitSquare(value.n * value.d);
+    const length = d === 1n ? new Frac(k, value.d).tex() : new QSqrt(ZERO, new Frac(k, value.d), d).tex();
+    const scale = new Frac(value.d, k * d); // 1/‖u‖ = scale·√d
+    const scaleTex = d === 1n ? scale : new QSqrt(ZERO, scale, d);
+    if (u.vec[0] instanceof PiE) {
+      return { length, unit: coefficientTex(scaleTex) + vectorTex(u.vec) };
+    }
+    const unit = u.vec.map((x) => (d === 1n ? x.mul(scale) : new QSqrt(ZERO, x.mul(scale), d)));
+    return { length, unit: vectorTex(unit) };
+  }
+
+  // ---- Gram–Schmidt for π/e matrices, with polynomials only ----
+  // Reducing big fractions in π and e is very slow, so instead use Gram
+  // determinants: with D_m the Gram determinant of the first m kept columns,
+  //   w_k = D_{k-1}·u_k  is a vector of polynomials,
+  //   u_j·u_j = D_j / D_{j-1},   c_j = (a_k·w_j) / D_j,
+  //   q_k = w_k / √(D_{k-1}·D_k).
+  const dot2 = (u, v) => u.reduce((sum, x, i) => add2(sum, mul2(x, v[i])), [POLY_ZERO]);
+
+  function det2(M) {
+    if (!M.length) return [POLY_ONE];
+    if (M.length === 1) return M[0][0];
+    let total = [POLY_ZERO];
+    M[0].forEach((entry, j) => {
+      if (isZero2(entry)) return;
+      const minor = M.slice(1).map((row) => row.filter((_, c) => c !== j));
+      const term = mul2(entry, det2(minor));
+      total = j % 2 ? sub2(total, term) : add2(total, term);
+    });
+    return total;
+  }
+
+  function gramSchmidtSymbolic(A) {
+    const kept = []; // { k, a, w, D, Dprev }
+    const steps = A[0].map((_, k) => {
+      const a = A.map((row) => row[k].num);
+      const m = kept.length;
+      const Dprev = m ? kept[m - 1].D : [POLY_ONE];
+      let w = a;
+      if (m) {
+        // w = Σ ± (minor of [Gram | g]) × column, from expanding the bordered determinant
+        const N = kept.map((s) => [...kept.map((t) => dot2(s.a, t.a)), dot2(s.a, a)]);
+        const vectors = [...kept.map((t) => t.a), a];
+        w = a.map(() => [POLY_ZERO]);
+        vectors.forEach((vec, c) => {
+          const minor = det2(N.map((row) => row.filter((_, j) => j !== c)));
+          const signed = (m + c) % 2 ? neg2(minor) : minor;
+          w = w.map((x, i) => add2(x, mul2(signed, vec[i])));
+        });
+      }
+      const zero = w.every(isZero2);
+      const projections = kept.map((t) => ({ t, top: dot2(a, t.w) }));
+      if (!zero) kept.push({ k, a, w, D: dot2(a, w), Dprev });
+      return { k, a, w, Dprev, projections, zero };
+    });
+    return { steps, kept };
+  }
+
+  // num/den as TeX, in lowest terms only when that's quick.
+  const SMALL_TERMS = 24;
+  function ratioTex(num, den) {
+    if (isZero2(num)) return "0";
+    const small = terms2(num).length + terms2(den).length <= SMALL_TERMS;
+    if (small || isOne2(den)) return new PiE(num, den).tex();
+    return `\\frac{${tex2(num)}}{${tex2(den)}}`;
+  }
+  const ratioValue = (num, den) =>
+    terms2(num).length + terms2(den).length <= SMALL_TERMS ? new PiE(num, den) : null;
+
+  function orthonormalSymbolic(a, blocks) {
+    const { steps, kept } = gramSchmidtSymbolic(a.A);
+    if (!kept.length) {
+      blocks.push(md(raw`Every column of $A$ is $\vec{0}$, so there's nothing to orthonormalize: ` +
+                     raw`the image is just $\{\vec{0}\}$.`));
+      return blocks;
+    }
+    const a_ = (k) => raw`\vec{a}_{${k + 1}}`;
+    const u_ = (k) => raw`\vec{u}_{${k + 1}}`;
+    const q_ = (k) => raw`\vec{q}_{${k + 1}}`;
+    const vectorOf = (w, den) => matrixTex(w.map((x) => [ratioTex(x, den)]));
+    blocks.push(
+      md(raw`**Step 1: make them perpendicular.** For each column $\vec{a}_k$, subtract its ` +
+         raw`projection onto every $\vec{u}$ we've already built:`),
+      latex(raw`\vec{u}_k = \vec{a}_k - \sum_{j} \frac{\vec{a}_k \cdot \vec{u}_j}` +
+            raw`{\vec{u}_j \cdot \vec{u}_j}\,\vec{u}_j`));
+    for (const step of steps) {
+      if (!step.projections.length) {
+        blocks.push(latex(`${u_(step.k)} = ${a_(step.k)} = ` + vectorOf(step.w, [POLY_ONE])));
+        continue;
+      }
+      const dots = step.projections.map(({ t, top }) =>
+        raw`$${a_(step.k)} \cdot ${u_(t.k)} = ${ratioTex(top, t.Dprev)}$ and ` +
+        raw`$${u_(t.k)} \cdot ${u_(t.k)} = ${ratioTex(t.D, t.Dprev)}$`);
+      const minus = step.projections.map(({ t, top }) => {
+        if (isZero2(top)) return "";
+        const c = ratioValue(top, t.D);
+        if (c && c.isOne()) return " - " + u_(t.k);
+        if (c && c.neg().isOne()) return " + " + u_(t.k);
+        if (c) return (c.isNegative() ? " + " : " - ") + coefficientTex(c.abs()) + u_(t.k);
+        return raw` - \left(${ratioTex(top, t.D)}\right)` + u_(t.k);
+      }).join("");
+      blocks.push(
+        md(`For $${a_(step.k)}$: ${andList(dots)}, so`),
+        latex(`${u_(step.k)} = ${a_(step.k)}${minus} = ` + vectorOf(step.w, step.Dprev)));
+      if (step.zero) {
+        blocks.push(md(
+          raw`That's $\vec{0}$, so $${a_(step.k)}$ is a combination of the earlier columns. ` +
+          "It adds nothing new, so we leave it out."));
+      }
+    }
+    blocks.push(md(raw`**Step 2: make them length 1.** Divide each $\vec{u}$ by its length:`));
+    for (const t of kept) {
+      const lengthSquared = ratioTex(t.D, t.Dprev);
+      // q = w / √(D_prev·D); simplify the square root when it's a single term
+      const product = mul2(t.D, t.Dprev);
+      const root = terms2(product).length === 1 ? sqrtMonomial(PiE.polynomial(product)) : null;
+      let length = raw`\sqrt{${lengthSquared}}`;
+      let unit = raw`\frac{1}{\sqrt{${tex2(product)}}}` + vectorOf(t.w, [POLY_ONE]);
+      if (root) {
+        const plain = root.factor.div(PiE.polynomial(t.Dprev));
+        length = root.s === 1n ? plain.tex() : coefficientTex(plain) + raw`\sqrt{${root.s}}`;
+        const scaled = matrixTex(t.w.map((x) => [PiE.polynomial(x).div(root.factor).tex()]));
+        unit = root.s === 1n ? scaled : new QSqrt(ZERO, new Frac(1n, root.s), root.s).tex() + scaled;
+      }
+      blocks.push(latex(
+        raw`\|${u_(t.k)}\| = \sqrt{${lengthSquared}}` +
+        (length === raw`\sqrt{${lengthSquared}}` ? "" : ` = ${length}`) +
+        raw`, \qquad ${q_(t.k)} = \frac{${u_(t.k)}}{\|${u_(t.k)}\|} = ` + unit));
+    }
+    const names = kept.map((t) => q_(t.k)).join(", ");
+    blocks.push(md(
+      `So $\\{${names}\\}$ is an **orthonormal basis** for the image of $A$. There ` +
+      `${kept.length === 1 ? "is" : "are"} ${plural(kept.length, "vector")}, matching the rank, ` +
+      `$${a.rank}$.`));
+    return blocks;
+  }
+
+  function orthonormalSection(a) {
+    if (a.modulus !== null) {
+      return [md(
+        "Orthonormalizing needs lengths, and lengths need square roots and a dot product " +
+        raw`that behaves like distance. $\mathbb{Z}_{${a.modulus}}$ doesn't have those (a ` +
+        raw`nonzero vector can even have $\vec{v} \cdot \vec{v} = 0$), so this part only works in ` +
+        "the normal mode.")];
+    }
+    const blocks = [md(
+      "**Gram–Schmidt** turns the columns of $A$ into an **orthonormal** set: vectors of " +
+      "length $1$ that are all perpendicular to each other (every dot product is $0$). They " +
+      raw`span the same space as the columns, so they form an **orthonormal basis for the ` +
+      raw`image** of $A$.`)];
+    if (a.A.flat().every((x) => x instanceof PiE && x.simple)) return orthonormalSymbolic(a, blocks);
+    const { steps, us } = gramSchmidt(a.A);
+    if (!us.length) {
+      blocks.push(md(raw`Every column of $A$ is $\vec{0}$, so there's nothing to orthonormalize: ` +
+                     raw`the image is just $\{\vec{0}\}$.`));
+      return blocks;
+    }
+    blocks.push(
+      md(raw`**Step 1: make them perpendicular.** For each column $\vec{a}_k$, subtract its ` +
+         raw`projection onto every $\vec{u}$ we've already built:`),
+      latex(raw`\vec{u}_k = \vec{a}_k - \sum_{j} \frac{\vec{a}_k \cdot \vec{u}_j}` +
+            raw`{\vec{u}_j \cdot \vec{u}_j}\,\vec{u}_j`));
+
+    const a_ = (k) => raw`\vec{a}_{${k + 1}}`;
+    const u_ = (k) => raw`\vec{u}_{${k + 1}}`;
+    for (const step of steps) {
+      if (!step.projections.length) {
+        blocks.push(latex(`${u_(step.k)} = ${a_(step.k)} = ` + vectorTex(step.vec)));
+        continue;
+      }
+      const used = step.projections.filter((p) => !p.coefficient.isZero());
+      const dots = step.projections.map((p) =>
+        raw`$${a_(step.k)} \cdot ${u_(p.u.k)} = ${p.top.tex()}$ and ` +
+        raw`$${u_(p.u.k)} \cdot ${u_(p.u.k)} = ${p.u.norm2.tex()}$`);
+      const minus = used.map((p) => {
+        const c = p.coefficient;
+        const size = c.abs();
+        return (c.isNegative() ? " + " : " - ") + (size.isOne() ? "" : coefficientTex(size)) + u_(p.u.k);
+      }).join("");
+      blocks.push(
+        md(`For ${"$" + a_(step.k) + "$"}: ${andList(dots)}, so`),
+        latex(`${u_(step.k)} = ${a_(step.k)}${minus} = ` + vectorTex(step.vec)));
+      if (step.zero) {
+        blocks.push(md(
+          raw`That's $\vec{0}$, so $${a_(step.k)}$ is a combination of the earlier columns. ` +
+          "It adds nothing new, so we leave it out."));
+      }
+    }
+
+    blocks.push(md(raw`**Step 2: make them length 1.** Divide each $\vec{u}$ by its length:`));
+    const q_ = (k) => raw`\vec{q}_{${k + 1}}`;
+    for (const u of us) {
+      const { length, unit } = normalizeTex(u);
+      blocks.push(latex(
+        raw`\|${u_(u.k)}\| = \sqrt{${u.norm2.tex()}}` +
+        (length === raw`\sqrt{${u.norm2.tex()}}` ? "" : ` = ${length}`) +
+        raw`, \qquad ${q_(u.k)} = \frac{${u_(u.k)}}{\|${u_(u.k)}\|} = ` + unit));
+    }
+    const names = us.map((u) => q_(u.k)).join(", ");
+    blocks.push(md(
+      `So $\\{${names}\\}$ is an **orthonormal basis** for the image of $A$. There ` +
+      `${us.length === 1 ? "is" : "are"} ${plural(us.length, "vector")}, matching the rank, ` +
+      `$${a.rank}$.`));
+    return blocks;
+  }
+
   // --- Eigenvalues and eigenvectors ---
 
   function nonSquareEigen(a) {
@@ -1380,7 +2147,7 @@
       if (c.isZero()) continue;
       const size = c.abs();
       const power = k === 0 ? "" : k === 1 ? v : `${v}^{${k}}`;
-      const coefficient = k > 0 && size.isOne() ? "" : size.tex();
+      const coefficient = k === 0 ? size.tex() : size.isOne() ? "" : coefficientTex(size);
       terms.push([c.isNegative(), coefficient + power]);
     }
     if (!terms.length) return "0";
@@ -1474,7 +2241,18 @@
             raw`**conjugate pairs** $a \pm bi$.`));
         }
       }
-      if (f.kind === "other") {
+      if (f.kind === "other" && f.exact) {
+        blocks.push(
+          md(`The factor $${polyTex(f.poly)}$ has no simpler roots, so we use the ` +
+             "**quadratic formula**:"),
+          latex(raw`\lambda = ${f.pmTex} \approx ` +
+                f.approx.map(decimalTex).join(raw`,\; `)));
+        if (!isRealish(f.approx[0])) {
+          blocks.push(md(
+            "The number under the square root is negative, so these two eigenvalues are " +
+            raw`**complex**, a conjugate pair $a \pm bi$.`));
+        }
+      } else if (f.kind === "other") {
         blocks.push(
           md(`The factor $${polyTex(f.poly)}$ doesn't split into pieces with fraction ` +
              "coefficients, and its roots can't be written using just fractions and square " +
@@ -1498,10 +2276,11 @@
       raw`\lambda &= ${v.lambda.tex()} && \text{algebraic multiplicity } ${v.mult}` +
       (v.complex ? complexTag : ""));
     for (const f of others) {
-      for (const z of f.approx) {
-        rows.push(raw`\lambda &\approx ${decimalTex(z)} && \text{algebraic multiplicity } ${f.mult}` +
+      f.approx.forEach((z, k) => {
+        const value = f.exact ? raw`&= ${f.exact[k]} \approx ` : raw`&\approx `;
+        rows.push(raw`\lambda ${value}${decimalTex(z)} && \text{algebraic multiplicity } ${f.mult}` +
                   (isRealish(z) ? "" : complexTag));
-      }
+      });
     }
     const total = e.factors.reduce(
       (sum, f) => sum + f.mult * (f.kind === "linear" ? 1 : degree(f.poly)), 0);
@@ -1533,6 +2312,13 @@
         `$${p - 1n}$, which is too many to check here. Pick a prime under 100,000 to see the ` +
         "eigenvalues.")];
     }
+    if (x.tooMessy) {
+      return [intro, md(
+        raw`With $\pi$ and $e$ in a matrix this size, the vectors $\vec{v}, A\vec{v}, ` +
+        raw`A^{2}\vec{v}, \dots$ quickly fill up with hundreds of terms, far too many to work ` +
+        "with exactly or to read. Uncheck **Axler's method** to see the eigenvalues found " +
+        raw`with $\det(A - \lambda I) = 0$ instead.`)];
+    }
 
     const blocks = [intro, md(
       "**Axler's method** finds eigenvalues without determinants. The key fact: in " +
@@ -1545,6 +2331,7 @@
     const eigenTex = (f) => {
       if (f.kind === "linear") return [raw`\lambda = ${f.root.tex()}`];
       if (f.kind === "quadratic") return [raw`\lambda = ${f.roots[0].tex(true)}`];
+      if (f.exact) return [raw`\lambda = ${f.pmTex}`];
       return f.approx.map((z) => raw`\lambda \approx ${decimalTex(z)}`);
     };
     let explainedWhy = false;
@@ -1563,7 +2350,7 @@
         ? terms.map(([c, label], t) => {
             const size = c.abs();
             const sign = c.isNegative() ? (t === 0 ? "-" : " - ") : t === 0 ? "" : " + ";
-            return sign + (size.isOne() ? "" : size.tex()) + label;
+            return sign + (size.isOne() ? "" : coefficientTex(size)) + label;
           }).join("")
         : raw`\vec{0}`;
 
@@ -1587,7 +2374,12 @@
             `gives $z = ${f.roots[0].tex(true)}$` +
             (f.d < 0n ? ", which are **complex** (a conjugate pair)." : ".")));
         }
-        if (f.kind === "other") {
+        if (f.kind === "other" && f.exact) {
+          blocks.push(md(
+            `The factor $${polyTex(f.poly, "z")}$ has no simpler roots; the quadratic formula ` +
+            `gives $z = ${f.pmTex}$` +
+            (isRealish(f.approx[0]) ? "." : ", which are **complex** (a conjugate pair).")));
+        } else if (f.kind === "other") {
           blocks.push(md(
             `The factor $${polyTex(f.poly, "z")}$ has roots that can't be written with just ` +
             "fractions and square roots, so we give them as decimals."));
@@ -1643,8 +2435,9 @@
       raw`\lambda &= ${v.lambda.tex()} && \dim \operatorname{null}(A - \lambda I)^{${a.n}} = ${v.mult}` +
       (v.complex ? complexTag : ""));
     for (const f of x.others) {
-      for (const z of f.approx) {
-        rows.push(raw`\lambda &\approx ${decimalTex(z)}` + (isRealish(z) ? "" : raw` && \text{complex}`));
+      for (const [k, z] of f.approx.entries()) {
+        const value = f.exact ? raw`&= ${f.exact[k]} \approx ` : raw`&\approx `;
+        rows.push(raw`\lambda ${value}${decimalTex(z)}` + (isRealish(z) ? "" : raw` && \text{complex}`));
       }
     }
     const total = x.values.reduce((sum, v) => sum + v.mult, 0);
@@ -1702,13 +2495,15 @@
     }
     if (e.approxValues.length) {
       blocks.push(md(
-        "The remaining eigenvalues are only known as decimals, so for them we row reduce " +
-        "with decimals too. These eigenvectors are **approximate** (rounded to 4 decimal " +
-        "places), but they work the same way."));
+        "The remaining eigenvalues are too messy to row reduce with exactly, so for them we " +
+        "row reduce with decimals. These eigenvectors are **approximate** (rounded to 4 " +
+        "decimal places), but they work the same way."));
     }
     const decimals = (M) => M.map((row) => row.map(decimalTex));
     for (const v of e.approxValues) {
-      const label = raw`\lambda \approx ${decimalTex(v.z)}`;
+      const label = v.exact
+        ? raw`\lambda = ${v.exact} \approx ${decimalTex(v.z)}`
+        : raw`\lambda \approx ${decimalTex(v.z)}`;
       blocks.push(md(`**For $${label}$**${v.complex ? " (complex)" : ""}:`));
       if (!v.space) {
         blocks.push(md("This one is too sensitive to rounding to find reliably with decimals."));
@@ -1734,29 +2529,139 @@
     return blocks;
   }
 
-  function diagonalizableText(a) {
+  // Is A diagonalizable? { state: "yes" | "no" | "unknown", text, complex }
+  function diagonalStatus(a) {
     const e = a.eigen;
     const where = a.modulus !== null ? raw` over $\mathbb{Z}_{${a.modulus}}$` : "";
     const short = [...e.values, ...e.approxValues].find((v) => v.geo !== null && v.geo < v.mult);
     if (short) {
       const which = short.lambda ? `= ${short.lambda.tex()}` : `\\approx ${decimalTex(short.z)}`;
-      return `❌ $\\lambda ${which}$ has algebraic multiplicity $${short.mult}$ ` +
+      return { state: "no", text:
+        `❌ $\\lambda ${which}$ has algebraic multiplicity $${short.mult}$ ` +
         `but only ${plural(short.geo, "independent eigenvector")}, so $A$ can't have ` +
         `$${a.n}$ independent eigenvectors in total. That means $A$ ` +
-        `**is not diagonalizable**${where}.`;
+        `**is not diagonalizable**${where}.` };
     }
     if (e.rest) {
-      return raw`❌ Part of $p(\lambda)$ has no roots in $\mathbb{Z}_{${a.modulus}}$, so $A$ ` +
-        `doesn't have enough eigenvalues there, and it **is not diagonalizable**${where}.`;
+      return { state: "no", text:
+        raw`❌ Part of $p(\lambda)$ has no roots in $\mathbb{Z}_{${a.modulus}}$, so $A$ ` +
+        `doesn't have enough eigenvalues there, and it **is not diagonalizable**${where}.` };
     }
-    if (e.approxValues.some((v) => v.geo === null)) return null;
+    if (e.approxValues.some((v) => v.geo === null)) return { state: "unknown", text: null };
     const complex = e.values.some((v) => v.complex) || e.approxValues.some((v) => v.complex);
     const verdict = "✅ Every eigenvalue has as many independent eigenvectors as its algebraic " +
       `multiplicity, so together they give $${a.n}$ independent eigenvectors. That means $A$ ` +
       `**is diagonalizable**${where}`;
-    return complex
+    return { state: "yes", complex, text: complex
       ? verdict + ", but only if we allow **complex** numbers. Using only real numbers, it isn't."
-      : verdict + ".";
+      : verdict + "." };
+  }
+
+  function diagonalizableText(a) {
+    return diagonalStatus(a).text;
+  }
+
+  // For the summary tile: true / false, or null when there's nothing to say.
+  function diagonalizableSummary(a) {
+    if (a.m !== a.n || a.eigen.tooBig) return null;
+    const { state } = diagonalStatus(a);
+    return state === "unknown" ? null : state === "yes";
+  }
+
+  // A as a complex number [real, imaginary], whatever kind of number it is.
+  function toComplex(x) {
+    if (Array.isArray(x)) return x;
+    return x instanceof QSqrt ? x.toComplex() : [x.toNumber(), 0];
+  }
+
+  // Inverse of a matrix of complex floats (Gauss–Jordan with partial pivoting).
+  function numericInverse(M) {
+    const n = M.length;
+    const augmented = M.map((row, i) => [...row, ...Array.from({ length: n }, (_, j) => [i === j ? 1 : 0, 0])]);
+    return numericRref(augmented, 1e-12).R.map((row) => row.slice(n));
+  }
+
+  // P (eigenvectors as columns), D (matching eigenvalues), and P⁻¹ — exact when
+  // everything lives in one number system, otherwise P⁻¹ as complex decimals.
+  // Decimal entries are [real, imaginary] pairs.
+  function diagonalization(a) {
+    const e = a.eigen;
+    const n = a.n;
+    const columns = [];
+    const diagonal = [];
+    for (const v of e.values) for (const vec of v.space.basis) { columns.push(vec); diagonal.push(v.lambda); }
+    for (const v of e.approxValues) for (const vec of v.space.basis) { columns.push(vec); diagonal.push(v.z); }
+    const fields = new Set(e.values.filter((v) => v.lambda instanceof QSqrt).map((v) => v.lambda.d));
+    const exact = !e.approxValues.length;
+    const zero = a.A[0][0].zero();
+    if (exact && fields.size <= 1) {
+      const d = [...fields][0];
+      const lift = d === undefined ? (x) => x : (x) => (x instanceof QSqrt ? x : new QSqrt(x, ZERO, d));
+      const P = Array.from({ length: n }, (_, i) => columns.map((col) => lift(col[i])));
+      const D = Array.from({ length: n }, (_, i) =>
+        Array.from({ length: n }, (_, j) => lift(i === j ? diagonal[i] : zero)));
+      return { P, D, Pinv: inverse(P), exact, exactInverse: true };
+    }
+    const P = Array.from({ length: n }, (_, i) => columns.map((col) => col[i]));
+    const D = Array.from({ length: n }, (_, i) =>
+      Array.from({ length: n }, (_, j) => (i === j ? diagonal[i] : exact ? zero : [0, 0])));
+    const Pinv = numericInverse(P.map((row) => row.map(toComplex)));
+    return { P, D, Pinv, exact, exactInverse: false };
+  }
+
+  function diagonalizeSection(a) {
+    if (a.m !== a.n) {
+      return [md("Only **square** matrices can be diagonalized, and $A$ is " +
+                 raw`$${a.m} \times ${a.n}$.`)];
+    }
+    const e = a.eigen;
+    if (e.tooBig) {
+      return [md("We need the eigenvalues first, and for this $n$ there are too many numbers to " +
+                 "check. Pick a prime under 100,000.")];
+    }
+    const where = a.modulus !== null ? raw` over $\mathbb{Z}_{${a.modulus}}$` : "";
+    const blocks = [md(
+      raw`To **diagonalize** $A$ means writing $A = PDP^{-1}$, where $D$ is a **diagonal** ` +
+      "matrix. The recipe: put independent eigenvectors in the columns of $P$, and put the " +
+      "matching eigenvalues, in the same order, down the diagonal of $D$.")];
+    const status = diagonalStatus(a);
+    if (status.state === "no") {
+      blocks.push(md(status.text), md(
+        `Without $${a.n}$ independent eigenvectors there's no invertible $P$ to use, so ` +
+        `$A$ **can't be diagonalized**${where}.`));
+      return blocks;
+    }
+    if (status.state === "unknown") {
+      blocks.push(md("Some eigenvalues here repeat and are only known as decimals, so we can't " +
+                     "reliably tell how many independent eigenvectors they have."));
+      return blocks;
+    }
+
+    const { P, D, Pinv, exact, exactInverse } = diagonalization(a);
+    const show = (x) => (Array.isArray(x) ? decimalTex(x) : x.tex());
+    const showAll = (M) => M.map((row) => row.map(show));
+    const eq = exact ? "=" : "\\approx";
+    blocks.push(latex(raw`P ${eq} ` + matrixTex(showAll(P)) + raw`, \qquad D ${eq} ` + matrixTex(showAll(D))));
+    if (exactInverse) {
+      blocks.push(
+        md("Since the columns of $P$ are independent, $P$ is invertible:"),
+        latex("P^{-1} = " + matrixTex(showAll(Pinv))));
+    } else {
+      blocks.push(
+        md("Since the columns of $P$ are independent, $P$ is invertible. Its entries get messy, " +
+           "so here it is in decimals:"),
+        latex(raw`P^{-1} \approx ` + matrixTex(showAll(Pinv))));
+    }
+    blocks.push(
+      latex(raw`A = PDP^{-1}`),
+      md("**Why it works:** multiplying $A$ by any column of $P$ just scales that column by its " +
+         "eigenvalue, which is exactly what multiplying $P$ by the diagonal matrix $D$ does. So " +
+         raw`$AP = PD$, and multiplying both sides on the right by $P^{-1}$ gives $A = PDP^{-1}$.`));
+    if (status.complex) {
+      blocks.push(md("Some eigenvalues are complex, so $P$ and $D$ have complex entries: $A$ is " +
+                     "diagonalizable using complex numbers, but not using only real numbers."));
+    }
+    return blocks;
   }
 
   // A short LaTeX list of the eigenvalues for the summary tile (square matrices only).
@@ -1770,7 +2675,8 @@
       if (f.kind === "linear") items.push(f.root.tex() + times(f.mult));
       if (f.kind === "quadratic") items.push(f.roots[0].tex(true) + times(f.mult));
       if (f.kind === "other") {
-        for (const z of f.approx) items.push(raw`\approx ${decimalTex(z)}` + times(f.mult));
+        if (f.exact) items.push(f.pmTex + times(f.mult));
+        else for (const z of f.approx) items.push(raw`\approx ${decimalTex(z)}` + times(f.mult));
       }
     }
     return items.length ? items.join(raw`,\; `) : raw`\text{none in } \mathbb{Z}_{${a.modulus}}`;
@@ -1778,7 +2684,7 @@
 
   const api = {
     Frac, ModP, QSqrt, parseEntry, parseGrid, parseModulus, analyze, explain, eigenSummary,
-    axlerAnalysis,
+    axlerAnalysis, diagonalizableSummary, gramSchmidt, gramSchmidtSymbolic, diagonalization, PiE,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else window.MatrixMath = api;
